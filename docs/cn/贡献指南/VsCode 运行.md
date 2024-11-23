@@ -13,4 +13,4 @@
 
 进入对应组件的目录，打开server.rs，会看到main函数，如下图所示，启动服务即可:
 
-![image](../../images/doc-image8.png)
+![image](../../_images/doc-image8.png)

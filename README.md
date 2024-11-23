@@ -1,6 +1,6 @@
 <p align="center">
   <picture>
-    <img alt="RobustMQ Logo" src="docs/images/robustmq-logo.png" width="300">
+    <img alt="RobustMQ Logo" src="docs/_images/robustmq-logo.png" width="300">
   </picture>
 </p>
  <h3 align="center">
@@ -42,7 +42,7 @@ Release planing：
 ## Architecture
 RobustMQ is a typical distributed layered architecture with separate computing layer, storage layer, and scheduling layer. By the control layer (Placement Center), computing Layer (Multi-protocol computing layer), Storage Adapter layer (Storage Adapter Layer), independent remote storage layer (Standalone storage) engine) consists of four parts. Each layer has the ability to quickly scale up and down, so as to achieve a complete Serverless capability of the whole system.
 
-![image](docs/images/robustmq-architecture.png)
+![image](docs/_images/robustmq-architecture.png)
 
 - Placement Center
 
@@ -212,12 +212,12 @@ Please refer to [contribution guidelines](http://www.robustmq.com/docs/robustmq-
 
 - **Wechat Group**: If you're interested in contributing to this project or discussing development topics, scan the QR Code to join our WeChat group for real-time discussions and collaboration.
 <div align="center"> 
-  <img src="docs/images/WechatGroup.png" alt="WeChat QR Code" width=200 />
+  <img src="docs/_images/WechatGroup.png" alt="WeChat QR Code" width=200 />
 </div>
 
 - **Personal wechat**: Wechat group QR code will be updated regularly. If the QR code expires, the developer's personal wechat can be added.
 <div align="center">
-  <img src="docs/images/wechat.jpg" alt="WeChat QR Code" width=200 />
+  <img src="docs/_images/wechat.jpg" alt="WeChat QR Code" width=200 />
 </div>
 
 ## License

@@ -32,7 +32,7 @@ function check_vars() {
   done
 }
 
-# Copies images from DockerHub to the destination registry.
+# Copies _images from DockerHub to the destination registry.
 function copy_images_from_dockerhub() {
   # Check if docker is installed.
   if ! command -v docker &> /dev/null; then

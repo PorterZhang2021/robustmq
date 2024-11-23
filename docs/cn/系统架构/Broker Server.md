@@ -1,5 +1,5 @@
 Broker Server是计算层组件，主要完成各种不同消息协议的数据接入及其相关功能的实现。从设计角度来看，它希望支持MQTT 3.1/3.1.1/5.0、AMQP、RocketMQ Remoting/GRPC、Kafka Protocol、OpenMessing、JNS、SQS等主流消息协议。架构如下：
-![image](../../images/doc-image2.png)
+![image](../../_images/doc-image2.png)
 
 - Broker Server 依靠 Placement Center 完成集群组建，比如节点发现、集群元数据存储等等。
 - Broker Server 中的 Node 是无状态的，只负责和客户端 SDK 交互，完成数据的写入和读取。

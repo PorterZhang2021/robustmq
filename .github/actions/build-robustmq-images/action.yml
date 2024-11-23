@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: Build robust images
-description: Build and push robust images
+name: Build robust _images
+description: Build and push robust _images
 inputs:
   image-registry:
-    description: The image registry to store the images
+    description: The image registry to store the _images
     required: true
   image-registry-username:
     description: The username to login to the image registry
@@ -25,14 +25,14 @@ inputs:
     description: The password to login to the image registry
     required: true
   amd64-artifact-name:
-    description: The name of the amd64 artifact for building images
+    description: The name of the amd64 artifact for building _images
     required: true
   arm64-artifact-name:
-    description: The name of the arm64 artifact for building images
+    description: The name of the arm64 artifact for building _images
     required: false
     default: ""
   image-namespace:
-    description: The namespace of the image registry to store the images
+    description: The namespace of the image registry to store the _images
     required: true
   image-name:
     description: The name of the image to build
@@ -94,7 +94,7 @@ runs:
         rm -rf arm64 && \
         mv ${{ inputs.arm64-artifact-name }} arm64
 
-    - name: Build and push images(without latest) for amd64 and arm64
+    - name: Build and push _images(without latest) for amd64 and arm64
       if: ${{ inputs.push-latest-tag == 'false' }}
       uses: docker/build-push-action@v3
       with:
@@ -105,7 +105,7 @@ runs:
         tags: |
           ${{ inputs.image-registry }}/${{ inputs.image-namespace }}/${{ inputs.image-name }}:${{ inputs.image-tag }}
 
-    - name: Build and push images for amd64 and arm64
+    - name: Build and push _images for amd64 and arm64
       if: ${{ inputs.push-latest-tag == 'true' }}
       uses: docker/build-push-action@v3
       with:

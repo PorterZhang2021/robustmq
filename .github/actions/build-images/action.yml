@@ -12,14 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: Group for building robustmq images
-description: Group for building robustmq images
+name: Group for building robustmq _images
+description: Group for building robustmq _images
 inputs:
   image-registry:
-    description: The image registry to store the images
+    description: The image registry to store the _images
     required: true
   image-namespace:
-    description: The namespace of the image registry to store the images
+    description: The namespace of the image registry to store the _images
     required: true
   image-name:
     description: The name of the image to build
@@ -45,8 +45,8 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Build and push standard images to dockerhub
-      uses: ./.github/actions/build-robust-images
+    - name: Build and push standard _images to dockerhub
+      uses: ./.github/actions/build-robust-_images
       with: # The image will be used as '${{ inputs.image-registry }}/${{ inputs.image-namespace }}/${{ inputs.image-name }}:${{ inputs.version }}'
         image-registry: ${{ inputs.image-registry }}
         image-namespace: ${{ inputs.image-namespace }}
@@ -60,9 +60,9 @@ runs:
         platforms: linux/amd64,linux/arm64
         push-latest-tag: ${{ inputs.push-latest-tag }}
 
-    - name: Build and push centos images to dockerhub
+    - name: Build and push centos _images to dockerhub
       if: ${{ inputs.dev-mode == 'false' }}
-      uses: ./.github/actions/build-robust-images
+      uses: ./.github/actions/build-robust-_images
       with:
         image-registry: ${{ inputs.image-registry }}
         image-namespace: ${{ inputs.image-namespace }}

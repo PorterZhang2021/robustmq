@@ -12,7 +12,7 @@ RobustMQ MQTT is a complete implementation of the MQTT protocol adapted by Robus
 - Supports data integration.
 
 The overall architecture is as follows:
-![image](../../images/doc-image5.png)
+![image](../../_images/doc-image5.png)
 - MQTT Broker is a stateless node, and MQTT clients randomly access a Broker to complete Pub/Sub of message data.
 - MQTT Broker performs node discovery and node health checks based on the Placement Center, thus completing node construction.
 - The MQTT cluster persists message through the Storage Adapter layer. The cluster’s metadata is stored in the Placement Center Cluster.
