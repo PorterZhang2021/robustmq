@@ -20,7 +20,13 @@ use grpc_clients::pool::ClientPool;
 use metadata_struct::acl::mqtt_acl::MqttAcl;
 use metadata_struct::mqtt::user::MqttUser;
 use protocol::broker_mqtt::broker_mqtt_admin::mqtt_broker_admin_service_server::MqttBrokerAdminService;
-use protocol::broker_mqtt::broker_mqtt_admin::{ClusterStatusReply, ClusterStatusRequest, CreateAclReply, CreateAclRequest, CreateUserReply, CreateUserRequest, DeleteAclReply, DeleteAclRequest, DeleteUserReply, DeleteUserRequest, EnableSlowSubScribeReply, EnableSlowSubscribeRequest, ListAclReply, ListAclRequest, ListConnectionRaw, ListConnectionReply, ListConnectionRequest, ListSlowSubScribeRaw, ListSlowSubscribeReply, ListSlowSubscribeRequest, ListUserReply, ListUserRequest};
+use protocol::broker_mqtt::broker_mqtt_admin::{
+    ClusterStatusReply, ClusterStatusRequest, CreateAclReply, CreateAclRequest, CreateUserReply,
+    CreateUserRequest, DeleteAclReply, DeleteAclRequest, DeleteUserReply, DeleteUserRequest,
+    EnableSlowSubScribeReply, EnableSlowSubscribeRequest, ListAclReply, ListAclRequest,
+    ListConnectionRaw, ListConnectionReply, ListConnectionRequest, ListSlowSubScribeRaw,
+    ListSlowSubscribeReply, ListSlowSubscribeRequest, ListUserReply, ListUserRequest,
+};
 use tonic::{Request, Response, Status};
 
 use crate::handler::cache::CacheManager;
@@ -241,12 +247,15 @@ impl MqttBrokerAdminService for GrpcAdminServices {
         }
     }
 
-    async fn mqtt_broker_list_slow_subscribe(&self, request: Request<ListSlowSubscribeRequest>) -> Result<Response<ListSlowSubscribeReply>, Status> {
+    async fn mqtt_broker_list_slow_subscribe(
+        &self,
+        request: Request<ListSlowSubscribeRequest>,
+    ) -> Result<Response<ListSlowSubscribeReply>, Status> {
         let list_slow_subscribe_request = request.into_inner();
-        let list_slow_subscribe_raw:Vec<ListSlowSubScribeRaw> = Vec::new();
+        let list_slow_subscribe_raw: Vec<ListSlowSubScribeRaw> = Vec::new();
         todo!();
-        Ok(Response::new(ListSlowSubscribeReply{
-            list_slow_subscribe_raw
+        Ok(Response::new(ListSlowSubscribeReply {
+            list_slow_subscribe_raw,
         }))
     }
 }

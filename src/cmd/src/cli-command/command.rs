@@ -73,7 +73,7 @@ enum MQTTAction {
 
     // observability: slow subscribe feat
     EnableSlowSubscribe(EnableSlowSubscribeArgs),
-    ListSlowSubscribe
+    ListSlowSubscribe,
 }
 
 // ------ mqtt user ------
