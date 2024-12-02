@@ -20,12 +20,7 @@ use grpc_clients::pool::ClientPool;
 use metadata_struct::acl::mqtt_acl::MqttAcl;
 use metadata_struct::mqtt::user::MqttUser;
 use protocol::broker_mqtt::broker_mqtt_admin::mqtt_broker_admin_service_server::MqttBrokerAdminService;
-use protocol::broker_mqtt::broker_mqtt_admin::{
-    ClusterStatusReply, ClusterStatusRequest, CreateAclReply, CreateAclRequest, CreateUserReply,
-    CreateUserRequest, DeleteAclReply, DeleteAclRequest, DeleteUserReply, DeleteUserRequest,
-    EnableSlowSubScribeReply, EnableSlowSubscribeRequest, ListAclReply, ListAclRequest,
-    ListConnectionRaw, ListConnectionReply, ListConnectionRequest, ListUserReply, ListUserRequest,
-};
+use protocol::broker_mqtt::broker_mqtt_admin::{ClusterStatusReply, ClusterStatusRequest, CreateAclReply, CreateAclRequest, CreateUserReply, CreateUserRequest, DeleteAclReply, DeleteAclRequest, DeleteUserReply, DeleteUserRequest, EnableSlowSubScribeReply, EnableSlowSubscribeRequest, ListAclReply, ListAclRequest, ListConnectionRaw, ListConnectionReply, ListConnectionRequest, ListSlowSubScribeRaw, ListSlowSubscribeReply, ListSlowSubscribeRequest, ListUserReply, ListUserRequest};
 use tonic::{Request, Response, Status};
 
 use crate::handler::cache::CacheManager;
@@ -79,6 +74,7 @@ impl MqttBrokerAdminService for GrpcAdminServices {
         return Ok(Response::new(reply));
     }
 
+    // ======= security svc ========
     // --- user ---
     async fn mqtt_broker_create_user(
         &self,
@@ -138,6 +134,7 @@ impl MqttBrokerAdminService for GrpcAdminServices {
         }
     }
 
+    // -------- acl feat -----------
     async fn mqtt_broker_list_acl(
         &self,
         _: Request<ListAclRequest>,
@@ -196,7 +193,8 @@ impl MqttBrokerAdminService for GrpcAdminServices {
         }
     }
 
-    // --- connection ---
+    // ========= server svc ===========
+    // --- connection feat ---
     async fn mqtt_broker_list_connection(
         &self,
         _: Request<ListConnectionRequest>,
@@ -223,7 +221,8 @@ impl MqttBrokerAdminService for GrpcAdminServices {
         Ok(Response::new(reply))
     }
 
-    // observability: slow_subscribe
+    // =============== observability svc =============
+    // -------------- slow subscribe feat ------------
     async fn mqtt_broker_enable_slow_subscribe(
         &self,
         request: Request<EnableSlowSubscribeRequest>,
@@ -240,5 +239,14 @@ impl MqttBrokerAdminService for GrpcAdminServices {
             })),
             Err(e) => Err(Status::cancelled(e.to_string())),
         }
+    }
+
+    async fn mqtt_broker_list_slow_subscribe(&self, request: Request<ListSlowSubscribeRequest>) -> Result<Response<ListSlowSubscribeReply>, Status> {
+        let list_slow_subscribe_request = request.into_inner();
+        let list_slow_subscribe_raw:Vec<ListSlowSubScribeRaw> = Vec::new();
+        todo!();
+        Ok(Response::new(ListSlowSubscribeReply{
+            list_slow_subscribe_raw
+        }))
     }
 }

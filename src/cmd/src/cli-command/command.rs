@@ -71,8 +71,9 @@ enum MQTTAction {
     // Connections
     ListConnection,
 
-    // observability
+    // observability: slow subscribe feat
     EnableSlowSubscribe(EnableSlowSubscribeArgs),
+    ListSlowSubscribe
 }
 
 // ------ mqtt user ------
@@ -177,7 +178,9 @@ async fn main() {
             let params = MqttCliCommandParam {
                 server: args.server,
                 action: match args.action {
+                    // cluster: status
                     MQTTAction::Status => MqttActionType::Status,
+                    // security: user
                     MQTTAction::CreateUser(arg) => MqttActionType::CreateUser(CreateUserRequest {
                         username: arg.username,
                         password: arg.password,
@@ -187,12 +190,15 @@ async fn main() {
                         username: arg.username,
                     }),
                     MQTTAction::ListUser => MqttActionType::ListUser,
+                    // server: connection
                     MQTTAction::ListConnection => MqttActionType::ListConnection,
+                    // observability: slow subscribe feat
                     MQTTAction::EnableSlowSubscribe(arg) => {
                         MqttActionType::EnableSlowSubscribe(EnableSlowSubscribeRequest {
                             is_enable: arg.is_enable,
                         })
                     }
+                    MQTTAction::ListSlowSubscribe() => MqttActionType::ListSlowSubscribe,
                 },
             };
             cmd.start(params).await;

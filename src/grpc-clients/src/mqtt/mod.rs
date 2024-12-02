@@ -13,12 +13,7 @@
 // limitations under the License.
 
 use common_base::error::common::CommonError;
-use protocol::broker_mqtt::broker_mqtt_admin::{
-    ClusterStatusReply, ClusterStatusRequest, CreateAclReply, CreateAclRequest, CreateUserReply,
-    CreateUserRequest, DeleteAclReply, DeleteAclRequest, DeleteUserReply, DeleteUserRequest,
-    EnableSlowSubScribeReply, EnableSlowSubscribeRequest, ListAclReply, ListAclRequest,
-    ListConnectionReply, ListConnectionRequest, ListUserReply, ListUserRequest,
-};
+use protocol::broker_mqtt::broker_mqtt_admin::{ClusterStatusReply, ClusterStatusRequest, CreateAclReply, CreateAclRequest, CreateUserReply, CreateUserRequest, DeleteAclReply, DeleteAclRequest, DeleteUserReply, DeleteUserRequest, EnableSlowSubScribeReply, EnableSlowSubscribeRequest, ListAclReply, ListAclRequest, ListConnectionReply, ListConnectionRequest, ListSlowSubscribeReply, ListSlowSubscribeRequest, ListUserReply, ListUserRequest};
 use protocol::broker_mqtt::broker_mqtt_inner::{
     DeleteSessionReply, DeleteSessionRequest, SendLastWillMessageReply, SendLastWillMessageRequest,
     UpdateCacheReply, UpdateCacheRequest,
@@ -29,25 +24,28 @@ use crate::pool::ClientPool;
 /// Enum wrapper for all possible requests to the mqtt broker
 #[derive(Debug, Clone)]
 pub enum MqttBrokerPlacementRequest {
-    // inner
+    // ==== inner =======
     DeleteSession(DeleteSessionRequest),
     UpdateCache(UpdateCacheRequest),
     SendLastWillMessage(SendLastWillMessageRequest),
 
-    // admin
+    // ===== admin =======
     ClusterStatus(ClusterStatusRequest),
+    // acl: user feat
     ListUser(ListUserRequest),
     CreateUser(CreateUserRequest),
     DeleteUser(DeleteUserRequest),
+    // acl
     ListAcl(ListAclRequest),
     CreateAcl(CreateAclRequest),
     DeleteAcl(DeleteAclRequest),
 
-    // connection
+    // server: connection feat
     ListConnection(ListConnectionRequest),
 
-    // slow subscribe
+    // observability: slow subscribe feat
     EnableSlowSubscribe(EnableSlowSubscribeRequest),
+    ListSlowSubscribe(ListSlowSubscribeRequest),
 }
 
 /// Enum wrapper for all possible replies from the mqtt broker
@@ -72,6 +70,7 @@ pub enum MqttBrokerPlacementReply {
 
     // slow subscribe
     EnableSlowSubscribe(EnableSlowSubScribeReply),
+    ListSlowSubscribe(ListSlowSubscribeReply),
 }
 
 pub mod admin;
@@ -85,6 +84,7 @@ async fn call_once(
     use MqttBrokerPlacementRequest::*;
 
     match request {
+        //  ======== inner ========
         DeleteSession(delete_session_request) => {
             let mut client = client_pool.mqtt_broker_mqtt_services_client(addr).await?;
             let reply = client.delete_session(delete_session_request).await?;
@@ -104,11 +104,14 @@ async fn call_once(
                 reply.into_inner(),
             ))
         }
+        // ========== admin ===========
+        // -------- cluster: status feat ----------
         ClusterStatus(cluster_status_request) => {
             let mut client = client_pool.mqtt_broker_admin_services_client(addr).await?;
             let reply = client.cluster_status(cluster_status_request).await?;
             Ok(MqttBrokerPlacementReply::ClusterStatus(reply.into_inner()))
         }
+        // ---------- security: user feat -----------
         ListUser(list_user_request) => {
             let mut client = client_pool.mqtt_broker_admin_services_client(addr).await?;
             let reply = client.mqtt_broker_list_user(list_user_request).await?;
@@ -124,6 +127,7 @@ async fn call_once(
             let reply = client.mqtt_broker_delete_user(delete_user_request).await?;
             Ok(MqttBrokerPlacementReply::DeleteUser(reply.into_inner()))
         }
+        // --------- security: acl feat ----------
         ListAcl(list_acl_request) => {
             let mut client = client_pool.mqtt_broker_admin_services_client(addr).await?;
             let reply = client.mqtt_broker_list_acl(list_acl_request).await?;
@@ -139,6 +143,7 @@ async fn call_once(
             let reply = client.mqtt_broker_delete_acl(delete_acl_request).await?;
             Ok(MqttBrokerPlacementReply::DeleteAcl(reply.into_inner()))
         }
+        // ------- server: connection feat -----------
         ListConnection(list_connection_request) => {
             let mut client = client_pool.mqtt_broker_admin_services_client(addr).await?;
             let reply = client
@@ -146,12 +151,22 @@ async fn call_once(
                 .await?;
             Ok(MqttBrokerPlacementReply::ListConnection(reply.into_inner()))
         }
+        // ----------- observability: slow subscribe feat -------
         EnableSlowSubscribe(enable_slow_subscribe_request) => {
             let mut client = client_pool.mqtt_broker_admin_services_client(addr).await?;
             let reply = client
                 .mqtt_broker_enable_slow_subscribe(enable_slow_subscribe_request)
                 .await?;
             Ok(MqttBrokerPlacementReply::EnableSlowSubscribe(
+                reply.into_inner(),
+            ))
+        }
+        ListSlowSubscribe(list_slow_subscribe_request) => {
+            let mut client = client_pool.mqtt_broker_admin_services_client(addr).await?;
+            let reply = client
+                .mqtt_broker_list_slow_subscribe(list_slow_subscribe_request)
+                .await?;
+            Ok(MqttBrokerPlacementReply::ListSlowSubscribe(
                 reply.into_inner(),
             ))
         }

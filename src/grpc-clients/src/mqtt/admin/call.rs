@@ -15,18 +15,14 @@
 use std::sync::Arc;
 
 use common_base::error::common::CommonError;
-use protocol::broker_mqtt::broker_mqtt_admin::{
-    ClusterStatusReply, ClusterStatusRequest, CreateAclReply, CreateAclRequest, CreateUserReply,
-    CreateUserRequest, DeleteAclReply, DeleteAclRequest, DeleteUserReply, DeleteUserRequest,
-    EnableSlowSubScribeReply, EnableSlowSubscribeRequest, ListAclReply, ListAclRequest,
-    ListConnectionReply, ListConnectionRequest, ListUserReply, ListUserRequest,
-};
+use protocol::broker_mqtt::broker_mqtt_admin::{ClusterStatusReply, ClusterStatusRequest, CreateAclReply, CreateAclRequest, CreateUserReply, CreateUserRequest, DeleteAclReply, DeleteAclRequest, DeleteUserReply, DeleteUserRequest, EnableSlowSubScribeReply, EnableSlowSubscribeRequest, ListAclReply, ListAclRequest, ListConnectionReply, ListConnectionRequest, ListSlowSubscribeReply, ListSlowSubscribeRequest, ListUserReply, ListUserRequest};
 
 use crate::mqtt::{call_once, MqttBrokerPlacementReply, MqttBrokerPlacementRequest};
 use crate::pool::ClientPool;
 use crate::utils::retry_call;
 
-// ---- cluster ------
+// ========= cluster ========
+// -------- status ---------
 pub async fn cluster_status(
     client_pool: Arc<ClientPool>,
     addrs: &[String],
@@ -39,7 +35,7 @@ pub async fn cluster_status(
     }
 }
 
-// ------ acl --------
+// ====== security ========
 // ------ user -------
 pub async fn mqtt_broker_list_user(
     client_pool: Arc<ClientPool>,
@@ -78,6 +74,7 @@ pub async fn mqtt_broker_delete_user(
     }
 }
 
+// ----------- acl ----------
 pub async fn mqtt_broker_list_acl(
     client_pool: Arc<ClientPool>,
     addrs: &[String],
@@ -114,6 +111,7 @@ pub async fn mqtt_broker_delete_acl(
     }
 }
 
+// ======== server ============
 // ------- connection  -----------
 pub async fn mqtt_broker_list_connection(
     client_pool: Arc<ClientPool>,
@@ -127,8 +125,8 @@ pub async fn mqtt_broker_list_connection(
     }
 }
 
-// --------- observability --------
-// --------- slow subscribe features ------
+// =========== observability =============
+// --------- slow subscribe feat ------
 pub async fn mqtt_broker_enable_slow_subscribe(
     client_pool: Arc<ClientPool>,
     addrs: &[String],
@@ -137,6 +135,17 @@ pub async fn mqtt_broker_enable_slow_subscribe(
     let request = MqttBrokerPlacementRequest::EnableSlowSubscribe(request);
     match retry_call(&client_pool, addrs, request, call_once).await? {
         MqttBrokerPlacementReply::EnableSlowSubscribe(reply) => Ok(reply),
+        _ => unreachable!("Reply type mismatch"),
+    }
+}
+pub async fn mqtt_broker_list_slow_subscribe(
+    client_pool: Arc<ClientPool>,
+    addrs: &[String],
+    request: ListSlowSubscribeRequest
+) -> Result<ListSlowSubscribeReply, CommonError> {
+    let request = MqttBrokerPlacementRequest::ListSlowSubscribe(request);
+    match retry_call(&client_pool, addrs, request, call_once).await? {
+        MqttBrokerPlacementReply::ListSlowSubscribe(reply) => Ok(reply),
         _ => unreachable!("Reply type mismatch"),
     }
 }

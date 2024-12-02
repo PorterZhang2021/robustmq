@@ -12,18 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::future::Future;
 use std::sync::Arc;
-
-use grpc_clients::mqtt::admin::call::{
-    cluster_status, mqtt_broker_create_user, mqtt_broker_delete_user,
-    mqtt_broker_enable_slow_subscribe, mqtt_broker_list_connection, mqtt_broker_list_user,
-};
+use axum::middleware::map_request;
+use common_base::error::common::CommonError;
+use grpc_clients::mqtt::admin::call::{cluster_status, mqtt_broker_create_user, mqtt_broker_delete_user, mqtt_broker_enable_slow_subscribe, mqtt_broker_list_connection, mqtt_broker_list_slow_subscribe, mqtt_broker_list_user};
 use grpc_clients::pool::ClientPool;
 use metadata_struct::mqtt::user::MqttUser;
-use protocol::broker_mqtt::broker_mqtt_admin::{
-    ClusterStatusRequest, CreateUserRequest, DeleteUserRequest, EnableSlowSubscribeRequest,
-    ListConnectionRequest, ListUserRequest,
-};
+use protocol::broker_mqtt::broker_mqtt_admin::{ClusterStatusRequest, CreateUserRequest, DeleteUserRequest, EnableSlowSubscribeRequest, ListConnectionReply, ListConnectionRequest, ListSlowSubscribeReply, ListSlowSubscribeRequest, ListUserRequest};
 
 use crate::{error_info, grpc_addr};
 
@@ -35,18 +31,20 @@ pub struct MqttCliCommandParam {
 
 #[derive(Clone)]
 pub enum MqttActionType {
+    // cluster: status
     Status,
 
-    // User admin
+    // acl: user
     CreateUser(CreateUserRequest),
     DeleteUser(DeleteUserRequest),
     ListUser,
 
-    // connection
+    // server: connection feat
     ListConnection,
 
-    // observability: slow subscribe features
+    // observability: slow subscribe feat
     EnableSlowSubscribe(EnableSlowSubscribeRequest),
+    ListSlowSubscribe,
 }
 
 pub struct MqttBrokerCommand {}
@@ -90,11 +88,16 @@ impl MqttBrokerCommand {
                 self.enable_slow_subscribe(client_pool.clone(), params.clone(), request.clone())
                     .await;
             }
+
+            MqttActionType::ListSlowSubscribe => {
+                self.list_slow_subscribe(client_pool.clone(), params.clone())
+                    .await;
+            }
         }
     }
 
-    // -------- cluster ---------------
-
+    // ====== cluster ==========
+    // ------- status ----------
     async fn status(&self, client_pool: Arc<ClientPool>, params: MqttCliCommandParam) {
         let request = ClusterStatusRequest {};
         match cluster_status(client_pool, &grpc_addr(params.server), request).await {
@@ -113,7 +116,8 @@ impl MqttBrokerCommand {
         }
     }
 
-    // ------------- acl ------------
+    // ========= acl ========
+    // -------- user -------
     async fn create_user(
         &self,
         client_pool: Arc<ClientPool>,
@@ -124,7 +128,7 @@ impl MqttBrokerCommand {
             .await
         {
             Ok(_) => {
-                println!("Created successfully!",)
+                println!("Created successfully!", )
             }
             Err(e) => {
                 println!("MQTT broker create user normal exception");
@@ -169,7 +173,8 @@ impl MqttBrokerCommand {
         }
     }
 
-    // ---------------- server -----------------
+    // ======= server =======
+    // ------- connection ------
     async fn list_connections(&self, client_pool: Arc<ClientPool>, params: MqttCliCommandParam) {
         let request = ListConnectionRequest {};
         match mqtt_broker_list_connection(client_pool.clone(), &grpc_addr(params.server), request)
@@ -188,8 +193,8 @@ impl MqttBrokerCommand {
         }
     }
 
-    // ---------------- observability ----------------
-    // ------------ slow subscribe features ----------
+    // ============ observability ============
+    // ------------ slow subscribe feat ----------
     async fn enable_slow_subscribe(
         &self,
         client_pool: Arc<ClientPool>,
@@ -201,7 +206,7 @@ impl MqttBrokerCommand {
             &grpc_addr(params.server),
             cli_request,
         )
-        .await
+            .await
         {
             Ok(_) => {
                 println!("MQTT broker enable slow subscribe successfully!");
@@ -209,6 +214,25 @@ impl MqttBrokerCommand {
 
             Err(e) => {
                 println!("MQTT broker enable slow subscribe exception");
+                error_info(e.to_string());
+            }
+        }
+    }
+
+    async fn list_slow_subscribe(
+        &self,
+        client_pool: Arc<ClientPool>,
+        params: MqttCliCommandParam,
+    ) {
+        let request = ListSlowSubscribeRequest {};
+        match mqtt_broker_list_slow_subscribe(client_pool.clone(), &grpc_addr(params.server), request)
+            .await
+        {
+            Ok(data) => {
+                println!("{:?}", data)
+            }
+            Err(e) => {
+                println!("MQTT broker list slow subscribe info exception");
                 error_info(e.to_string());
             }
         }

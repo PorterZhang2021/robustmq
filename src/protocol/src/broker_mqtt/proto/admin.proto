@@ -4,25 +4,26 @@ service MQTTBrokerAdminService {
     // cluster
     rpc cluster_status(ClusterStatusRequest) returns(ClusterStatusReply){}
 
-    // user
+    // security svc: user feat
     rpc mqtt_broker_create_user(CreateUserRequest) returns(CreateUserReply){}
 
     rpc mqtt_broker_delete_user(DeleteUserRequest) returns(DeleteUserReply){}
 
     rpc mqtt_broker_list_user(ListUserRequest) returns(ListUserReply){}
 
+    // security svc: acl feat
     rpc mqtt_broker_list_acl(ListAclRequest) returns(ListAclReply){}
 
     rpc mqtt_broker_create_acl(CreateAclRequest) returns(CreateAclReply){}
 
     rpc mqtt_broker_delete_acl(DeleteAclRequest) returns(DeleteAclReply){}
 
-    // server
+    // server svc: connection feat
     rpc mqtt_broker_list_connection(ListConnectionRequest) returns(ListConnectionReply){}
 
-    // observability
+    // observability svc: slow_subscribe feat
     rpc mqtt_broker_enable_slow_subscribe(EnableSlowSubscribeRequest) returns(EnableSlowSubScribeReply) {}
-
+    rpc mqtt_broker_list_slow_subscribe(ListSlowSubscribeRequest) returns(ListSlowSubscribeReply){}
 }
 
 // --------- cluster --------
@@ -34,7 +35,8 @@ message ClusterStatusReply{
     repeated string nodes = 2;
 }
 
-// --------- user --------
+// ========= security svc ==========
+// --------- user feat --------
 message ListUserRequest{
 
 }
@@ -63,6 +65,8 @@ message DeleteUserReply{
 
 }
 
+// -------- acl feat --------
+
 message ListAclRequest{
     string cluster_name = 1;
 }
@@ -89,6 +93,7 @@ message CreateAclReply{
 
 }
 
+// ========= server svc ==========
 // --------- connection --------
 message ListConnectionRequest{
 
@@ -107,12 +112,28 @@ message ListConnectionRaw {
 }
 
 
-// --------- observability service --------
-// --------- slow subscribe feature -------
+// --------- observability svc --------
+// --------- slow subscribe feat -------
 message EnableSlowSubscribeRequest {
     bool is_enable = 1;
 }
 
 message EnableSlowSubScribeReply {
     string message = 1;
+}
+
+message ListSlowSubscribeRequest {
+
+}
+
+message ListSlowSubscribeReply {
+    repeated ListSlowSubScribeRaw list_slow_subscribe_raw = 1;
+}
+
+message ListSlowSubScribeRaw {
+    string client_id = 1;
+    string topic = 2;
+    uint32 time_ms = 3;
+    string node_info = 4;
+    uint64 create_time = 5;
 }
