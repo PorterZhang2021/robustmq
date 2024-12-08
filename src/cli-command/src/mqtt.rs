@@ -34,7 +34,7 @@ pub struct MqttCliCommandParam {
     pub action: MqttActionType,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum MqttActionType {
     Status,
 
