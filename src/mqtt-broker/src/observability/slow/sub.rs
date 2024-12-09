@@ -46,7 +46,7 @@ impl SlowSubData {
 pub fn record_slow_sub_data(slow_data: SlowSubData) -> Result<(), MqttBrokerError> {
     let data = serde_json::to_string(&slow_data)?;
     info!("slow sub log init successfully");
-     // info!("{}", format!("{:?}", data));
+    // info!("{}", format!("{:?}", data));
     // info!("test");
     Ok(())
 }
