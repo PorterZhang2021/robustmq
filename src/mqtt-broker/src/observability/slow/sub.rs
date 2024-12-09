@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use common_base::tools::{get_local_ip, now_second};
+use log::{info, log, logger};
 use serde::{Deserialize, Serialize};
 
 use crate::handler::error::MqttBrokerError;
@@ -42,7 +43,12 @@ impl SlowSubData {
     }
 }
 
-pub fn record_slow_sub_data(slow_data: SlowSubData) -> Result<(), MqttBrokerError> {
-    let _ = serde_json::to_string(&slow_data)?;
+pub fn record_slow_sub_data(slow_data: SlowSubData, whole_ms: u128) -> Result<(), MqttBrokerError> {
+    let data = serde_json::to_string(&slow_data)?;
+
+    if slow_data.time_ms > whole_ms {
+        info!(target: "mqtt-broker::observability", "{}", data);
+    }
+
     Ok(())
 }
