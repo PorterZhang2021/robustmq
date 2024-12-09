@@ -16,7 +16,9 @@ use clap::builder::{
     ArgAction, BoolishValueParser, EnumValueParser, NonEmptyStringValueParser, RangedU64ValueParser,
 };
 use clap::Parser;
+use cli_command::mqtt::MqttActionType;
 use common_base::enum_type::common_enum::SortType;
+use protocol::broker_mqtt::broker_mqtt_admin::EnableSlowSubscribeRequest;
 
 // security: user feat
 #[derive(clap::Args, Debug)]
@@ -107,5 +109,39 @@ impl SlowSubArgs {
 
     pub fn get_client_id(&self) -> Option<String> {
         self.client_id.clone()
+    }
+}
+
+pub fn process_slow_sub_args(args: SlowSubArgs) -> MqttActionType {
+    if args.get_is_enable().is_none() {
+        todo!()
+    } else {
+        eprintln!("args: {:?}", args);
+        MqttActionType::EnableSlowSubscribe(EnableSlowSubscribeRequest {
+            is_enable: args.get_is_enable().unwrap(),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_process_slow_sub_args_function_field_is_enable_not_none() {
+        let args = SlowSubArgs {
+            is_enable: Some(true),
+            list: None,
+            sort: None,
+            topic: None,
+            sub_name: None,
+            client_id: None,
+        };
+
+        let action_type = process_slow_sub_args(args);
+        assert_eq!(
+            MqttActionType::EnableSlowSubscribe(EnableSlowSubscribeRequest { is_enable: true }),
+            action_type
+        )
     }
 }
