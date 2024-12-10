@@ -16,6 +16,7 @@ use std::string::FromUtf8Error;
 
 use common_base::error::common::CommonError;
 use thiserror::Error;
+use tonic::Status;
 
 #[derive(Error, Debug)]
 pub enum MqttBrokerError {
@@ -89,4 +90,10 @@ pub enum MqttBrokerError {
 
     #[error("invalid acl permission")]
     InvalidAclPermission,
+}
+
+impl From<MqttBrokerError> for Status {
+    fn from(e: MqttBrokerError) -> Self {
+        Status::cancelled(e.to_string())
+    }
 }
