@@ -7,7 +7,15 @@ export default function getNavs() {
         {text: "首页", link: "/zh/"},
         {text: "博客", link: "/zh/Blogs/"},
         {text: "文档", link: "/zh/OverView/What-is-RobustMQ"},
-        {text: "演示", link: "http://demo.robustmq.com"},
+        {
+            text: "演示",
+            items: [
+                {text: "🖥️ Dashboard", link: "http://demo.robustmq.com:8080/"},
+                {text: "📊 Grafana", link: "http://demo.robustmq.com:3000/d/robustmq-mqtt-broker/robustmq-mqtt-broker-dashboard?orgId=1&from=now-1h&to=now&timezone=browser&var-DS_PROMETHEUS=&refresh=5s"},
+                {text: "📈 Prometheus", link: "http://demo.robustmq.com:9092/classic/graph"},
+                {text: "🔌 测试方式", link: "/zh/QuickGuide/PublicMqttServer"},
+            ]
+        },
         {
             text: "学习MQTT",
             items: [
