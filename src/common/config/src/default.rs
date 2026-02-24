@@ -66,6 +66,9 @@ pub fn default_meta_addrs() -> Table {
 pub fn default_runtime() -> Runtime {
     Runtime {
         runtime_worker_threads: get_default_runtime_worker_threads(),
+        server_worker_threads: 0,
+        meta_worker_threads: 0,
+        broker_worker_threads: 0,
         tls_cert: "./config/certs/cert.pem".to_string(),
         tls_key: "./config/certs/key.pem".to_string(),
     }
@@ -74,7 +77,7 @@ pub fn default_runtime() -> Runtime {
 pub fn default_network() -> Network {
     Network {
         accept_thread_num: 1,
-        handler_thread_num: 1000,
+        handler_thread_num: 64,
         queue_size: 5000,
     }
 }

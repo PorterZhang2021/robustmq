@@ -18,6 +18,35 @@ use prometheus_client::encoding::EncodeLabelSet;
 #[derive(Eq, Hash, Clone, EncodeLabelSet, Debug, PartialEq)]
 struct SystemLabel {}
 
+/// Label used to distinguish metrics per Tokio runtime (server / meta / broker).
+#[derive(Eq, Hash, Clone, EncodeLabelSet, Debug, PartialEq)]
+pub struct RuntimeLabel {
+    pub runtime: String,
+}
+
+register_gauge_metric!(
+    TOKIO_RUNTIME_BUSY_RATIO,
+    "tokio_runtime_busy_ratio",
+    "Worker-thread busy ratio for the named Tokio runtime (0-100)",
+    RuntimeLabel
+);
+
+// ── Tokio runtime: global queue depth ─────────────────────────────────────
+register_gauge_metric!(
+    TOKIO_RUNTIME_QUEUE_DEPTH,
+    "tokio_runtime_queue_depth",
+    "Number of tasks waiting in the global queue of the named Tokio runtime",
+    RuntimeLabel
+);
+
+// ── Tokio runtime: alive tasks ────────────────────────────────────────────
+register_gauge_metric!(
+    TOKIO_RUNTIME_ALIVE_TASKS,
+    "tokio_runtime_alive_tasks",
+    "Number of alive (spawned but not yet completed) tasks in the named Tokio runtime",
+    RuntimeLabel
+);
+
 register_gauge_metric!(
     SYSTEM_PROCESS_CPU_USAGE,
     "system_process_cpu_usage",
@@ -92,4 +121,53 @@ pub fn record_system_memory_get() -> i64 {
     let mut result = 0i64;
     gauge_metric_get!(SYSTEM_MEMORY_USAGE, label, result);
     result
+}
+
+pub fn record_runtime_busy_ratio_set(runtime: &str, value: i64) {
+    let label = RuntimeLabel {
+        runtime: runtime.to_string(),
+    };
+    gauge_metric_set!(TOKIO_RUNTIME_BUSY_RATIO, label, value);
+}
+
+pub fn record_runtime_queue_depth_set(runtime: &str, value: i64) {
+    let label = RuntimeLabel {
+        runtime: runtime.to_string(),
+    };
+    gauge_metric_set!(TOKIO_RUNTIME_QUEUE_DEPTH, label, value);
+}
+
+pub fn record_runtime_alive_tasks_set(runtime: &str, value: i64) {
+    let label = RuntimeLabel {
+        runtime: runtime.to_string(),
+    };
+    gauge_metric_set!(TOKIO_RUNTIME_ALIVE_TASKS, label, value);
+}
+
+/// Pre-register all gauge metrics in this module to 0 so they appear in
+/// the Prometheus output immediately on startup.
+pub fn init() {
+    let label = SystemLabel {};
+    gauge_metric_set!(SYSTEM_PROCESS_CPU_USAGE, label, 0);
+    let label = SystemLabel {};
+    gauge_metric_set!(SYSTEM_PROCESS_MEMORY_USAGE, label, 0);
+    let label = SystemLabel {};
+    gauge_metric_set!(SYSTEM_CPU_USAGE, label, 0);
+    let label = SystemLabel {};
+    gauge_metric_set!(SYSTEM_MEMORY_USAGE, label, 0);
+
+    for rt in &["server", "meta", "broker"] {
+        let label = RuntimeLabel {
+            runtime: rt.to_string(),
+        };
+        gauge_metric_set!(TOKIO_RUNTIME_BUSY_RATIO, label, 0);
+        let label = RuntimeLabel {
+            runtime: rt.to_string(),
+        };
+        gauge_metric_set!(TOKIO_RUNTIME_QUEUE_DEPTH, label, 0);
+        let label = RuntimeLabel {
+            runtime: rt.to_string(),
+        };
+        gauge_metric_set!(TOKIO_RUNTIME_ALIVE_TASKS, label, 0);
+    }
 }

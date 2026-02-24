@@ -24,12 +24,15 @@ use broker_core::{
 use common_base::{
     error::common::CommonError,
     role::{is_broker_node, is_engine_node, is_meta_node},
-    runtime::{calc_runtime_worker_threads, create_runtime},
+    runtime::{
+        create_runtime, resolve_broker_worker_threads, resolve_meta_worker_threads,
+        resolve_server_worker_threads,
+    },
 };
 use common_config::{
     broker::broker_config, config::BrokerConfig, storage::memory::StorageDriverMemoryConfig,
 };
-use common_metrics::core::server::register_prometheus_export;
+use common_metrics::{core::server::register_prometheus_export, init_metrics};
 use delay_message::manager::DelayMessageManager;
 use grpc_clients::pool::ClientPool;
 use meta_service::{
@@ -69,7 +72,7 @@ use storage_engine::{
     filesegment::write::WriteManager, group::OffsetManager, handler::adapter::StorageEngineHandler,
     StorageEngineParams, StorageEngineServer,
 };
-use system_info::start_monitor;
+use system_info::{start_monitor, start_runtime_monitor};
 use tokio::{runtime::Runtime, signal, sync::broadcast};
 use tracing::{error, info};
 
@@ -80,6 +83,14 @@ mod grpc;
 
 pub struct BrokerServer {
     server_runtime: Runtime,
+    /// Dedicated runtime for Raft tasks; Raft::new() is called inside
+    /// meta_runtime.block_on() so all openraft internal tasks are spawned here,
+    /// isolated from the gRPC server_runtime.
+    meta_runtime: Runtime,
+    /// Dedicated runtime for MQTT broker tasks; build_broker_mqtt_params is called
+    /// inside broker_runtime.block_on() so tasks spawned during construction
+    /// (e.g. RetainMessageManager's send thread) land here, not on server_runtime.
+    broker_runtime: Runtime,
     place_params: MetaServiceServerParams,
     mqtt_params: MqttBrokerServerParams,
     engine_params: StorageEngineParams,
@@ -100,6 +111,7 @@ impl Default for BrokerServer {
 
 impl BrokerServer {
     pub fn new() -> Self {
+        init_metrics();
         let config = broker_config();
         let client_pool = Arc::new(ClientPool::new(config.grpc_client.channels_per_address));
         let rocksdb_engine_handler = Arc::new(RocksDBEngine::new(
@@ -108,8 +120,13 @@ impl BrokerServer {
             column_family_list(),
         ));
         let rate_limiter_manager = Arc::new(RateLimiterManager::new());
-        let worker_threads = calc_runtime_worker_threads(config.runtime.runtime_worker_threads);
-        let server_runtime = create_runtime("server-runtime", worker_threads);
+        let server_worker_threads =
+            resolve_server_worker_threads(config.runtime.server_worker_threads);
+        let meta_worker_threads = resolve_meta_worker_threads(config.runtime.meta_worker_threads);
+        let broker_worker_threads =
+            resolve_broker_worker_threads(config.runtime.broker_worker_threads);
+
+        let server_runtime = create_runtime("server-runtime", server_worker_threads);
         let broker_cache = Arc::new(BrokerCacheManager::new(config.clone()));
         let connection_manager = Arc::new(NetworkConnectionManager::new());
 
@@ -130,9 +147,26 @@ impl BrokerServer {
             offset_manager.clone(),
         );
 
-        // Build meta service and MQTT broker params concurrently in a single block_on.
-        // meta_params is independent; storage_driver + mqtt_params are chained but
-        // run in parallel with meta_params via tokio::join!.
+        // Create meta_runtime here so that Raft::new() (inside build_meta_service) is
+        // called within meta_runtime.block_on().  openraft spawns ~9 internal tasks via
+        // tokio::spawn() during Raft::new(); those calls resolve against the *current*
+        // runtime context, so they all land on meta_runtime instead of server_runtime.
+        let meta_runtime = create_runtime("meta-runtime", meta_worker_threads);
+
+        // Run build_meta_service on meta_runtime so all openraft internal tasks
+        // (core loop, log IO, state machine worker, etc.) are isolated from the
+        // gRPC server_runtime, eliminating task-scheduler contention.
+        let meta_params = meta_runtime.block_on(BrokerServer::build_meta_service(
+            client_pool.clone(),
+            rocksdb_engine_handler.clone(),
+            broker_cache.clone(),
+        ));
+
+        // Create broker_runtime here so that tasks spawned during MQTT param
+        // construction (e.g. RetainMessageManager's send thread) land on
+        // broker_runtime rather than server_runtime.
+        let broker_runtime = create_runtime("broker-runtime", broker_worker_threads);
+
         let mqtt_seh = engine_params.storage_engine_handler.clone();
         let mqtt_om = offset_manager.clone();
         let mqtt_cp = client_pool.clone();
@@ -141,47 +175,40 @@ impl BrokerServer {
         let mqtt_cm = connection_manager.clone();
         let mqtt_stop = main_stop_send.clone();
 
-        let (meta_params, mqtt_params) = server_runtime.block_on(async {
-            tokio::join!(
-                BrokerServer::build_meta_service(
-                    client_pool.clone(),
-                    rocksdb_engine_handler.clone(),
-                    broker_cache.clone(),
-                ),
-                async move {
-                    let storage_driver_manager =
-                        match StorageDriverManager::new(mqtt_om.clone(), mqtt_seh).await {
-                            Ok(storage) => Arc::new(storage),
-                            Err(e) => {
-                                error!("Failed to build message storage driver: {}", e);
-                                std::process::exit(1);
-                            }
-                        };
-
-                    match BrokerServer::build_broker_mqtt_params(
-                        mqtt_cp,
-                        mqtt_bc,
-                        mqtt_re,
-                        mqtt_cm,
-                        storage_driver_manager,
-                        mqtt_om,
-                        mqtt_stop,
-                    )
-                    .await
-                    {
-                        Ok(params) => params,
-                        Err(e) => {
-                            error!("Failed to build MQTT broker params: {}", e);
-                            std::process::exit(1);
-                        }
+        let mqtt_params = broker_runtime.block_on(async move {
+            let storage_driver_manager =
+                match StorageDriverManager::new(mqtt_om.clone(), mqtt_seh).await {
+                    Ok(storage) => Arc::new(storage),
+                    Err(e) => {
+                        error!("Failed to build message storage driver: {}", e);
+                        std::process::exit(1);
                     }
-                }
+                };
+
+            match BrokerServer::build_broker_mqtt_params(
+                mqtt_cp,
+                mqtt_bc,
+                mqtt_re,
+                mqtt_cm,
+                storage_driver_manager,
+                mqtt_om,
+                mqtt_stop,
             )
+            .await
+            {
+                Ok(params) => params,
+                Err(e) => {
+                    error!("Failed to build MQTT broker params: {}", e);
+                    std::process::exit(1);
+                }
+            }
         });
 
         BrokerServer {
             broker_cache,
             server_runtime,
+            meta_runtime,
+            broker_runtime,
             place_params: meta_params,
             engine_params,
             config: config.clone(),
@@ -195,9 +222,6 @@ impl BrokerServer {
     }
 
     pub fn start(&self) {
-        let worker_threads =
-            calc_runtime_worker_threads(self.config.runtime.runtime_worker_threads);
-
         // start grpc server
         let place_params = self.place_params.clone();
         let mqtt_params = self.mqtt_params.clone();
@@ -274,12 +298,13 @@ impl BrokerServer {
         let config = broker_config();
 
         // start meta service
+        // meta_runtime was created in new() so all Raft internal tasks already
+        // live there; MetaServiceServer background tasks also spawn here.
         let (stop_send, _) = broadcast::channel(2);
-        let meta_runtime = create_runtime("meta-runtime", worker_threads);
         let place_params = self.place_params.clone();
         if is_meta_node(&config.roles) {
             meta_stop_send = Some(stop_send.clone());
-            meta_runtime.spawn(Box::pin(async move {
+            self.meta_runtime.spawn(Box::pin(async move {
                 let mut pc = MetaServiceServer::new(place_params, stop_send.clone());
                 pc.start().await;
             }));
@@ -298,13 +323,12 @@ impl BrokerServer {
             self.register_node(raw_stop_send.clone()).await;
         });
 
-        // start storage engine server + mqtt server on shared broker-runtime
-        let broker_runtime = create_runtime("broker-runtime", worker_threads);
-
+        // broker_runtime was created in new() so all MQTT and engine tasks
+        // (including those spawned during construction) are on the same runtime.
         if is_engine_node(&config.roles) {
             engine_stop_send = Some(stop_send.clone());
             let server = StorageEngineServer::new(self.engine_params.clone(), stop_send);
-            broker_runtime.spawn(Box::pin(async move {
+            self.broker_runtime.spawn(Box::pin(async move {
                 server.start().await;
             }));
             self.wait_for_engine_ready();
@@ -314,7 +338,7 @@ impl BrokerServer {
         if is_broker_node(&config.roles) {
             mqtt_stop_send = Some(stop_send.clone());
             let server = MqttBrokerServer::new(self.mqtt_params.clone(), stop_send.clone());
-            broker_runtime.spawn(Box::pin(async move {
+            self.broker_runtime.spawn(Box::pin(async move {
                 server.start().await;
             }));
         }
@@ -333,9 +357,20 @@ impl BrokerServer {
         }));
 
         // system resource monitor
-        let raw_stop_send = stop_send;
+        let raw_stop_send = stop_send.clone();
         self.server_runtime.spawn(async move {
             start_monitor(raw_stop_send).await;
+        });
+
+        // Tokio runtime metrics monitor
+        let runtime_handles = vec![
+            ("server".to_string(), self.server_runtime.handle().clone()),
+            ("meta".to_string(), self.meta_runtime.handle().clone()),
+            ("broker".to_string(), self.broker_runtime.handle().clone()),
+        ];
+        let raw_stop_send = stop_send;
+        self.server_runtime.spawn(async move {
+            start_runtime_monitor(runtime_handles, raw_stop_send).await;
         });
 
         // awaiting stop

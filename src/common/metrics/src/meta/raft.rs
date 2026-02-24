@@ -13,7 +13,8 @@
 // limitations under the License.
 
 use crate::{
-    counter_metric_inc, histogram_metric_observe, register_counter_metric,
+    counter_metric_inc, counter_metric_touch, gauge_metric_set, histogram_metric_observe,
+    histogram_metric_touch, register_counter_metric, register_gauge_metric,
     register_histogram_metric_ms_with_default_buckets,
 };
 use prometheus_client::encoding::EncodeLabelSet;
@@ -54,6 +55,27 @@ register_histogram_metric_ms_with_default_buckets!(
     RAFT_WRITE_DURATION,
     "raft_write_duration_ms",
     "Duration of write operations in milliseconds",
+    RaftLabel
+);
+
+register_gauge_metric!(
+    RAFT_APPLY_LAG,
+    "raft_apply_lag",
+    "Gap between last_log_index and last_applied index; non-zero means state machine is behind",
+    RaftLabel
+);
+
+register_gauge_metric!(
+    RAFT_LAST_LOG_INDEX,
+    "raft_last_log_index",
+    "Latest log index appended to the Raft log",
+    RaftLabel
+);
+
+register_gauge_metric!(
+    RAFT_LAST_APPLIED,
+    "raft_last_applied",
+    "Latest log index applied to the state machine",
     RaftLabel
 );
 
@@ -143,6 +165,70 @@ pub fn record_rpc_duration(machine: &str, rpc_type: &str, duration_ms: f64) {
         rpc_type: rpc_type.to_string(),
     };
     histogram_metric_observe!(RAFT_RPC_DURATION, duration_ms, label);
+}
+
+/// Pre-register Raft metrics (Gauges, Counters, Histograms) for all known
+/// state machines so they appear in Prometheus output immediately on startup.
+pub fn init() {
+    for machine in &["mqtt", "offset", "metadata"] {
+        // Gauge metrics
+        let label = RaftLabel {
+            machine: machine.to_string(),
+        };
+        gauge_metric_set!(RAFT_APPLY_LAG, label, 0);
+        let label = RaftLabel {
+            machine: machine.to_string(),
+        };
+        gauge_metric_set!(RAFT_LAST_LOG_INDEX, label, 0);
+        let label = RaftLabel {
+            machine: machine.to_string(),
+        };
+        gauge_metric_set!(RAFT_LAST_APPLIED, label, 0);
+
+        // Counter metrics
+        counter_metric_touch!(
+            RAFT_WRITE_REQUESTS_TOTAL,
+            RaftLabel {
+                machine: machine.to_string()
+            }
+        );
+        counter_metric_touch!(
+            RAFT_WRITE_SUCCESS_TOTAL,
+            RaftLabel {
+                machine: machine.to_string()
+            }
+        );
+        counter_metric_touch!(
+            RAFT_WRITE_FAILURES_TOTAL,
+            RaftLabel {
+                machine: machine.to_string()
+            }
+        );
+
+        // Histogram metrics
+        histogram_metric_touch!(
+            RAFT_WRITE_DURATION,
+            RaftLabel {
+                machine: machine.to_string()
+            }
+        );
+    }
+}
+
+pub fn record_raft_apply_lag(machine: &str, last_log: u64, last_applied: u64) {
+    let label = RaftLabel {
+        machine: machine.to_string(),
+    };
+    let lag = last_log.saturating_sub(last_applied) as i64;
+    gauge_metric_set!(RAFT_APPLY_LAG, label, lag);
+    let label = RaftLabel {
+        machine: machine.to_string(),
+    };
+    gauge_metric_set!(RAFT_LAST_LOG_INDEX, label, last_log as i64);
+    let label = RaftLabel {
+        machine: machine.to_string(),
+    };
+    gauge_metric_set!(RAFT_LAST_APPLIED, label, last_applied as i64);
 }
 
 #[cfg(test)]
