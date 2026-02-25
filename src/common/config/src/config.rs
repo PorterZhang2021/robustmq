@@ -221,13 +221,12 @@ pub struct Runtime {
     pub runtime_worker_threads: usize,
 
     /// Worker threads for the server runtime (gRPC, HTTP admin, Prometheus).
-    /// 0 = auto: max(4, num_cpus / 2).
+    /// 0 = auto: num_cpus.
     #[serde(default)]
     pub server_worker_threads: usize,
 
     /// Worker threads for the meta runtime (Raft state machines, RocksDB).
-    /// 0 = auto: max(4, num_cpus / 2).
-    /// Raft is largely a serial pipeline; more threads bring diminishing returns.
+    /// 0 = auto: num_cpus.
     #[serde(default)]
     pub meta_worker_threads: usize,
 
@@ -279,6 +278,14 @@ pub struct MetaRuntime {
     pub heartbeat_timeout_ms: u64,
     pub heartbeat_check_time_ms: u64,
     pub raft_write_timeout_sec: u64,
+    #[serde(default = "default_raft_sharded_group_num")]
+    pub offset_raft_group_num: u32,
+    #[serde(default = "default_raft_sharded_group_num")]
+    pub data_raft_group_num: u32,
+}
+
+fn default_raft_sharded_group_num() -> u32 {
+    1
 }
 
 impl Default for MetaRuntime {
