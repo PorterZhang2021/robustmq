@@ -11,3 +11,16 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
+use crate::DelayTask;
+use common_base::error::common::CommonError;
+
+pub async fn handle_session_expire(_task: &DelayTask) -> Result<(), CommonError> {
+    // TODO: implement session expire logic
+    Ok(())
+}
+
+pub async fn handle_lastwill_expire(_task: &DelayTask) -> Result<(), CommonError> {
+    // TODO: implement last will expire logic
+    Ok(())
+}
