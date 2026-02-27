@@ -12,15 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::DelayTask;
+use std::sync::Arc;
+
 use common_base::error::common::CommonError;
+use metadata_struct::mqtt::session::MqttSession;
+use rocksdb_engine::{
+    keys::meta::storage_key_mqtt_session, rocksdb::RocksDBEngine,
+    storage::meta_data::engine_get_by_meta_data,
+};
 
-pub async fn handle_session_expire(_task: &DelayTask) -> Result<(), CommonError> {
-    // TODO: implement session expire logic
+pub async fn handle_session_expire(
+    client_id: &str,
+    rocksdb_engine_handler: &Arc<RocksDBEngine>,
+) -> Result<(), CommonError> {
+    let key = storage_key_mqtt_session(client_id);
+    if let Some(_session) =
+        engine_get_by_meta_data::<MqttSession>(rocksdb_engine_handler, &key)?.map(|data| data.data)
+    {
+    }
+
     Ok(())
 }
 
-pub async fn handle_lastwill_expire(_task: &DelayTask) -> Result<(), CommonError> {
-    // TODO: implement last will expire logic
-    Ok(())
-}
+pub struct SessionExpireCallManager {}

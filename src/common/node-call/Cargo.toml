@@ -13,24 +13,17 @@
 # limitations under the License.
 
 [package]
-name = "delay-task"
+name = "node-call"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-bytes.workspace = true
-serde.workspace = true
-common-base.workspace = true
-common-config.workspace = true
-storage-adapter.workspace = true
+broker-core.workspace = true
 dashmap.workspace = true
-tokio.workspace = true
-tokio-util.workspace = true
-tracing.workspace = true
-futures.workspace = true
+common-base.workspace = true
 grpc-clients.workspace = true
 metadata-struct.workspace = true
-broker-core.workspace = true
-common-metrics.workspace = true
-rocksdb-engine.workspace = true
+protocol.workspace = true
+tokio.workspace = true
+tracing.workspace = true

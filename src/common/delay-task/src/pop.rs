@@ -13,9 +13,10 @@
 // limitations under the License.
 
 use crate::delay::delete_delay_task_index;
-use crate::handler::{handle_lastwill_expire, handle_session_expire};
+use crate::handler::lastwill_expire::handle_lastwill_expire;
+use crate::handler::session_expire::handle_session_expire;
 use crate::manager::{DelayTaskManager, SharedDelayQueue};
-use crate::{DelayTask, DelayTaskType};
+use crate::{DelayTask, DelayTaskData};
 use common_base::error::common::CommonError;
 use common_base::tools::now_second;
 use common_metrics::mqtt::delay_task::{
@@ -23,6 +24,7 @@ use common_metrics::mqtt::delay_task::{
     record_delay_task_schedule_latency,
 };
 use futures::StreamExt;
+use rocksdb_engine::rocksdb::RocksDBEngine;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
@@ -32,6 +34,7 @@ use tracing::{debug, error, info, warn};
 const POP_LOCK_TIMEOUT_MS: u64 = 100;
 
 pub(crate) fn spawn_delay_task_pop_threads(
+    rocksdb_engine_handler: &Arc<RocksDBEngine>,
     delay_task_manager: &Arc<DelayTaskManager>,
     delay_queue_num: u32,
 ) {
@@ -42,7 +45,7 @@ pub(crate) fn spawn_delay_task_pop_threads(
 
         let (stop_send, _) = broadcast::channel(2);
         delay_task_manager.add_delay_queue_pop_thread(shard_no, stop_send.clone());
-
+        let raw_rocksdb_engine_handler = rocksdb_engine_handler.clone();
         tokio::spawn(async move {
             info!("Delay task pop thread started for shard {}", shard_no);
             let mut recv = stop_send.subscribe();
@@ -61,7 +64,7 @@ pub(crate) fn spawn_delay_task_pop_threads(
                             _ => {}
                         }
                     }
-                    res = pop_delay_queue(&manager, shard_no) => {
+                    res = pop_delay_queue(&raw_rocksdb_engine_handler,&manager, shard_no) => {
                         if let Err(e) = res {
                             error!("Delay task pop error on shard {}: {}", shard_no, e);
                         }
@@ -73,6 +76,7 @@ pub(crate) fn spawn_delay_task_pop_threads(
 }
 
 async fn pop_delay_queue(
+    rocksdb_engine_handler: &Arc<RocksDBEngine>,
     delay_task_manager: &Arc<DelayTaskManager>,
     shard_no: u32,
 ) -> Result<(), CommonError> {
@@ -97,7 +101,12 @@ async fn pop_delay_queue(
         Ok(Some(expired)) => {
             let task = expired.into_inner();
             drop(delay_queue);
-            spawn_task_process(delay_task_manager.clone(), task);
+            spawn_task_process(
+                rocksdb_engine_handler.clone(),
+                delay_task_manager.clone(),
+                task,
+            )
+            .await;
         }
         Ok(None) => {
             debug!(
@@ -115,31 +124,37 @@ async fn pop_delay_queue(
     Ok(())
 }
 
-pub(crate) fn spawn_task_process(delay_task_manager: Arc<DelayTaskManager>, task: DelayTask) {
-    tokio::spawn(async move {
-        let permit = match delay_task_manager
-            .handler_semaphore
-            .clone()
-            .acquire_owned()
-            .await
-        {
-            Ok(permit) => permit,
-            Err(e) => {
-                error!(
-                    "Failed to acquire delay task handler permit: task_id={}, error={}",
-                    task.task_id, e
-                );
-                return;
-            }
-        };
-
-        let _permit = permit;
-        let task_type_str = format!("{:?}", task.task_type);
-        if let Err(e) = delay_task_process(&delay_task_manager, &task).await {
-            record_delay_task_execute_failed(&task_type_str);
+pub(crate) async fn spawn_task_process(
+    rocksdb_engine_handler: Arc<RocksDBEngine>,
+    delay_task_manager: Arc<DelayTaskManager>,
+    task: DelayTask,
+) {
+    let permit = match delay_task_manager
+        .handler_semaphore
+        .clone()
+        .acquire_owned()
+        .await
+    {
+        Ok(permit) => permit,
+        Err(e) => {
             error!(
-                "Failed to process delay task: task_id={}, task_type={:?}, error={}",
-                task.task_id, task.task_type, e
+                "Failed to acquire delay task handler permit: task_id={}, error={}",
+                task.task_id, e
+            );
+            return;
+        }
+    };
+
+    tokio::spawn(async move {
+        let _permit = permit;
+        let task_type_str = task.task_type_name();
+        if let Err(e) =
+            delay_task_process(&delay_task_manager, &rocksdb_engine_handler, &task).await
+        {
+            record_delay_task_execute_failed(task_type_str);
+            error!(
+                "Failed to process delay task: task_id={}, task_type={}, error={}",
+                task.task_id, task_type_str, e
             );
         }
     });
@@ -147,25 +162,26 @@ pub(crate) fn spawn_task_process(delay_task_manager: Arc<DelayTaskManager>, task
 
 pub async fn delay_task_process(
     delay_task_manager: &Arc<DelayTaskManager>,
+    rocksdb_engine_handler: &Arc<RocksDBEngine>,
     task: &DelayTask,
 ) -> Result<(), CommonError> {
+    let task_type_str = task.task_type_name();
     debug!(
-        "Processing delay task: task_id={}, task_type={:?}",
-        task.task_id, task.task_type
+        "Processing delay task: task_id={}, task_type={}",
+        task.task_id, task_type_str
     );
 
     delay_task_manager.remove_task_key(&task.task_id);
 
-    let task_type_str = format!("{:?}", task.task_type);
     let latency_s = now_second().saturating_sub(task.delay_target_time) as f64;
-    record_delay_task_schedule_latency(&task_type_str, latency_s);
+    record_delay_task_schedule_latency(task_type_str, latency_s);
 
-    match task.task_type {
-        DelayTaskType::MQTTSessionExpire => {
-            handle_session_expire(task).await?;
+    match &task.data {
+        DelayTaskData::MQTTSessionExpire(client_id) => {
+            handle_session_expire(client_id, rocksdb_engine_handler).await?;
         }
-        DelayTaskType::MQTTLastwillExpire => {
-            handle_lastwill_expire(task).await?;
+        DelayTaskData::MQTTLastwillExpire(client_id) => {
+            handle_lastwill_expire(client_id).await?;
         }
     }
 
@@ -173,6 +189,6 @@ pub async fn delay_task_process(
         delete_delay_task_index(&delay_task_manager.storage_driver_manager, &task.task_id).await?;
     }
 
-    record_delay_task_executed(&task_type_str);
+    record_delay_task_executed(task_type_str);
     Ok(())
 }
