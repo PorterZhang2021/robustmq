@@ -20,16 +20,16 @@ use broker_core::cache::BrokerCacheManager;
 use common_base::error::common::CommonError;
 use dashmap::DashMap;
 use grpc_clients::pool::ClientPool;
-use metadata_struct::meta::node::BrokerNode;
 use protocol::broker::broker_common::{BrokerUpdateCacheActionType, BrokerUpdateCacheResourceType};
 use protocol::broker::broker_mqtt::LastWillMessageItem;
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, RwLock};
 use tracing::info;
 
 pub const GLOBAL_CHANNEL_SIZE: usize = 10000;
 pub const NODE_CHANNEL_SIZE: usize = 5000;
 pub const BATCH_SIZE: usize = 100;
+pub const WORKER_THREAD_NUM: usize = 10;
 pub const RPC_MAX_RETRIES: usize = 3;
 pub const RPC_RETRY_BASE_MS: u64 = 50;
 
@@ -47,25 +47,27 @@ pub enum NodeCallData {
     SendLastWillMessage(LastWillMessageItem),
 }
 
-pub struct NodeChannel {
-    pub node: BrokerNode,
-    pub sender: mpsc::Sender<NodeCallData>,
+impl NodeCallData {
+    pub fn partition_key(&self) -> Option<&str> {
+        match self {
+            NodeCallData::UpdateCache(_) => None,
+            NodeCallData::DeleteSession(client_id) => Some(client_id),
+            NodeCallData::SendLastWillMessage(item) => Some(&item.client_id),
+        }
+    }
 }
 
 pub struct NodeCallManager {
-    pub global_sender: mpsc::Sender<NodeCallData>,
-    global_receiver: Option<mpsc::Receiver<NodeCallData>>,
+    pub global_sender: RwLock<Option<mpsc::Sender<NodeCallData>>>,
     broker_cache: Arc<BrokerCacheManager>,
-    node_channels: Arc<DashMap<u64, NodeChannel>>,
+    node_channels: Arc<DashMap<u64, mpsc::Sender<NodeCallData>>>,
     client_pool: Arc<ClientPool>,
 }
 
 impl NodeCallManager {
     pub fn new(client_pool: Arc<ClientPool>, broker_cache: Arc<BrokerCacheManager>) -> Self {
-        let (global_sender, global_receiver) = mpsc::channel(GLOBAL_CHANNEL_SIZE);
         NodeCallManager {
-            global_sender,
-            global_receiver: Some(global_receiver),
+            global_sender: RwLock::new(None),
             broker_cache,
             node_channels: Arc::new(DashMap::with_capacity(8)),
             client_pool,
@@ -73,16 +75,20 @@ impl NodeCallManager {
     }
 
     pub async fn send(&self, data: NodeCallData) -> Result<(), CommonError> {
-        self.global_sender.send(data).await.map_err(|e| {
-            CommonError::CommonError(format!("Failed to send to global channel: {}", e))
-        })
+        let read = self.global_sender.read().await;
+        if let Some(sender) = read.clone() {
+            sender.send(data).await.map_err(|e| {
+                CommonError::CommonError(format!("Failed to send to global channel: {}", e))
+            })?;
+            return Ok(());
+        }
+        Err(CommonError::CommonError("".to_string()))
     }
 
-    pub fn start(&mut self, stop_send: broadcast::Sender<bool>) {
-        let global_receiver = self
-            .global_receiver
-            .take()
-            .expect("NodeCallManager::start must be called exactly once");
+    pub async fn start(&self, stop_send: broadcast::Sender<bool>) {
+        let (global_sender, global_receiver) = mpsc::channel(GLOBAL_CHANNEL_SIZE);
+        let mut write = self.global_sender.write().await;
+        *write = Some(global_sender);
 
         tokio::spawn(dispatcher::run(
             global_receiver,
@@ -92,6 +98,6 @@ impl NodeCallManager {
             self.client_pool.clone(),
         ));
 
-        info!("NodeCallManager started");
+        info!("Node call manager started");
     }
 }

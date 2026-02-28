@@ -12,17 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::controller::call_broker::call::BrokerCallManager;
-use crate::controller::call_broker::mqtt::{
-    update_cache_by_add_topic, update_cache_by_delete_topic,
-};
 use crate::core::error::MetaServiceError;
+use crate::core::notify::{send_notify_by_add_topic, send_notify_by_delete_topic};
 use crate::raft::manager::MultiRaftManager;
 use crate::raft::route::data::{StorageData, StorageDataType};
 use crate::storage::mqtt::topic::MqttTopicStorage;
 use common_base::utils::serialize::encode_to_bytes;
 use grpc_clients::pool::ClientPool;
 use metadata_struct::mqtt::topic::Topic;
+use node_call::NodeCallManager;
 use protocol::meta::meta_service_mqtt::{
     CreateTopicReply, CreateTopicRequest, CreateTopicRewriteRuleReply,
     CreateTopicRewriteRuleRequest, DeleteTopicReply, DeleteTopicRequest,
@@ -69,8 +67,7 @@ pub async fn list_topic_by_req(
 
 pub async fn create_topic_by_req(
     raft_manager: &Arc<MultiRaftManager>,
-    call_manager: &Arc<BrokerCallManager>,
-    client_pool: &Arc<ClientPool>,
+    call_manager: &Arc<NodeCallManager>,
     rocksdb_engine_handler: &Arc<RocksDBEngine>,
     req: &CreateTopicRequest,
 ) -> Result<CreateTopicReply, MetaServiceError> {
@@ -85,16 +82,16 @@ pub async fn create_topic_by_req(
     raft_manager.write_data(&req.topic_name, data).await?;
 
     let topic = Topic::decode(&req.content)?;
-    update_cache_by_add_topic(call_manager, client_pool, topic).await?;
 
+    send_notify_by_add_topic(call_manager, topic).await?;
     Ok(CreateTopicReply {})
 }
 
 pub async fn delete_topic_by_req(
     rocksdb_engine_handler: &Arc<RocksDBEngine>,
     raft_manager: &Arc<MultiRaftManager>,
-    call_manager: &Arc<BrokerCallManager>,
-    client_pool: &Arc<ClientPool>,
+    call_manager: &Arc<NodeCallManager>,
+    _client_pool: &Arc<ClientPool>,
     req: &DeleteTopicRequest,
 ) -> Result<DeleteTopicReply, MetaServiceError> {
     let topic_storage = MqttTopicStorage::new(rocksdb_engine_handler.clone());
@@ -107,7 +104,7 @@ pub async fn delete_topic_by_req(
     let data = StorageData::new(StorageDataType::MqttDeleteTopic, encode_to_bytes(req));
     raft_manager.write_data(&req.topic_name, data).await?;
 
-    update_cache_by_delete_topic(call_manager, client_pool, topic).await?;
+    send_notify_by_delete_topic(call_manager, topic).await?;
 
     Ok(DeleteTopicReply {})
 }

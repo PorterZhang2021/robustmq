@@ -12,10 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::controller::call_broker::call::BrokerCallManager;
 use crate::{
-    controller::call_broker::mqtt::{update_cache_by_add_user, update_cache_by_delete_user},
     core::error::MetaServiceError,
+    core::notify::{send_notify_by_add_user, send_notify_by_delete_user},
     raft::{
         manager::MultiRaftManager,
         route::data::{StorageData, StorageDataType},
@@ -25,6 +24,7 @@ use crate::{
 use common_base::utils::serialize::encode_to_bytes;
 use grpc_clients::pool::ClientPool;
 use metadata_struct::mqtt::user::MqttUser;
+use node_call::NodeCallManager;
 use protocol::meta::meta_service_mqtt::{
     CreateUserReply, CreateUserRequest, DeleteUserReply, DeleteUserRequest, ListUserReply,
     ListUserRequest,
@@ -57,8 +57,8 @@ pub fn list_user_by_req(
 
 pub async fn create_user_by_req(
     raft_manager: &Arc<MultiRaftManager>,
-    call_manager: &Arc<BrokerCallManager>,
-    client_pool: &Arc<ClientPool>,
+    call_manager: &Arc<NodeCallManager>,
+    _client_pool: &Arc<ClientPool>,
     rocksdb_engine_handler: &Arc<RocksDBEngine>,
     req: &CreateUserRequest,
 ) -> Result<CreateUserReply, MetaServiceError> {
@@ -73,15 +73,15 @@ pub async fn create_user_by_req(
     raft_manager.write_metadata(data).await?;
 
     let user = MqttUser::decode(&req.content)?;
-    update_cache_by_add_user(call_manager, client_pool, user).await?;
+    send_notify_by_add_user(call_manager, user).await?;
 
     Ok(CreateUserReply {})
 }
 
 pub async fn delete_user_by_req(
     raft_manager: &Arc<MultiRaftManager>,
-    call_manager: &Arc<BrokerCallManager>,
-    client_pool: &Arc<ClientPool>,
+    call_manager: &Arc<NodeCallManager>,
+    _client_pool: &Arc<ClientPool>,
     rocksdb_engine_handler: &Arc<RocksDBEngine>,
     req: &DeleteUserRequest,
 ) -> Result<DeleteUserReply, MetaServiceError> {
@@ -95,7 +95,7 @@ pub async fn delete_user_by_req(
     let data = StorageData::new(StorageDataType::MqttDeleteUser, encode_to_bytes(req));
     raft_manager.write_metadata(data).await?;
 
-    update_cache_by_delete_user(call_manager, client_pool, user).await?;
+    send_notify_by_delete_user(call_manager, user).await?;
 
     Ok(DeleteUserReply {})
 }

@@ -12,12 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::controller::call_broker::call::BrokerCallManager;
 use crate::{
-    controller::call_broker::mqtt::{
-        update_cache_by_add_subscribe, update_cache_by_delete_subscribe,
-    },
     core::error::MetaServiceError,
+    core::notify::{send_notify_by_add_subscribe, send_notify_by_delete_subscribe},
     raft::{
         manager::MultiRaftManager,
         route::data::{StorageData, StorageDataType},
@@ -27,6 +24,7 @@ use crate::{
 use common_base::utils::serialize::encode_to_bytes;
 use grpc_clients::pool::ClientPool;
 use metadata_struct::mqtt::subscribe_data::MqttSubscribe;
+use node_call::NodeCallManager;
 use protocol::meta::meta_service_mqtt::{
     DeleteAutoSubscribeRuleReply, DeleteAutoSubscribeRuleRequest, DeleteSubscribeReply,
     DeleteSubscribeRequest, ListAutoSubscribeRuleReply, ListAutoSubscribeRuleRequest,
@@ -40,8 +38,7 @@ use std::sync::Arc;
 pub async fn delete_subscribe_by_req(
     raft_manager: &Arc<MultiRaftManager>,
     rocksdb_engine_handler: &Arc<RocksDBEngine>,
-    call_manager: &Arc<BrokerCallManager>,
-    client_pool: &Arc<ClientPool>,
+    call_manager: &Arc<NodeCallManager>,
     req: &DeleteSubscribeRequest,
 ) -> Result<DeleteSubscribeReply, MetaServiceError> {
     let storage = MqttSubscribeStorage::new(rocksdb_engine_handler.clone());
@@ -64,7 +61,7 @@ pub async fn delete_subscribe_by_req(
     raft_manager.write_metadata(data).await?;
 
     for raw in subscribes {
-        update_cache_by_delete_subscribe(call_manager, client_pool, raw).await?;
+        send_notify_by_delete_subscribe(call_manager, raw).await?;
     }
 
     Ok(DeleteSubscribeReply {})
@@ -86,8 +83,8 @@ pub fn list_subscribe_by_req(
 
 pub async fn set_subscribe_by_req(
     raft_manager: &Arc<MultiRaftManager>,
-    call_manager: &Arc<BrokerCallManager>,
-    client_pool: &Arc<ClientPool>,
+    call_manager: &Arc<NodeCallManager>,
+    _client_pool: &Arc<ClientPool>,
     req: &SetSubscribeRequest,
 ) -> Result<SetSubscribeReply, MetaServiceError> {
     let data = StorageData::new(StorageDataType::MqttSetSubscribe, encode_to_bytes(req));
@@ -95,7 +92,7 @@ pub async fn set_subscribe_by_req(
 
     let subscribe = MqttSubscribe::decode(&req.subscribe)
         .map_err(|e| MetaServiceError::CommonError(e.to_string()))?;
-    update_cache_by_add_subscribe(call_manager, client_pool, subscribe).await?;
+    send_notify_by_add_subscribe(call_manager, subscribe).await?;
 
     Ok(SetSubscribeReply {})
 }

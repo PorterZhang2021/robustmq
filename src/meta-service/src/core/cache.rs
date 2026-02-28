@@ -20,15 +20,14 @@ use crate::storage::journal::segment::SegmentStorage;
 use crate::storage::journal::segment_meta::SegmentMetadataStorage;
 use crate::storage::journal::shard::ShardStorage;
 use crate::storage::mqtt::connector::MqttConnectorStorage;
+use crate::storage::mqtt::topic::MqttTopicStorage;
 use crate::storage::mqtt::user::MqttUserStorage;
-use crate::{controller::session_expire::ExpireLastWill, storage::mqtt::topic::MqttTopicStorage};
 use common_base::role::is_engine_node;
 use common_base::tools::now_second;
 use dashmap::DashMap;
 use metadata_struct::meta::node::BrokerNode;
 use metadata_struct::mqtt::bridge::connector::MQTTConnector;
 use metadata_struct::mqtt::group_leader::MqttGroupLeader;
-use metadata_struct::mqtt::session::MqttSession;
 use metadata_struct::mqtt::topic::Topic;
 use metadata_struct::mqtt::user::MqttUser;
 use metadata_struct::storage::segment::EngineSegment;
@@ -39,7 +38,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 #[derive(Clone, Default, Debug, Serialize, Deserialize)]
-pub struct CacheManager {
+pub struct MetaCacheManager {
     // (node_id, BrokerNode)
     pub node_list: DashMap<u64, BrokerNode>,
 
@@ -53,17 +52,11 @@ pub struct CacheManager {
     // (username,user)
     pub user_list: DashMap<String, MqttUser>,
 
-    // (client_id, ExpireLastWill)
-    pub expire_last_wills: DashMap<String, ExpireLastWill>,
-
     // (client_id,MQTTConnector)
     pub connector_list: DashMap<String, MQTTConnector>,
 
     //(connector_name, ConnectorHeartbeat)
     pub connector_heartbeat: DashMap<String, ConnectorHeartbeat>,
-
-    // (client_id, MqttSession)
-    pub session_list: DashMap<String, MqttSession>,
 
     // (group_name, broker_id)
     pub group_leader: DashMap<String, MqttGroupLeader>,
@@ -85,14 +78,13 @@ pub struct CacheManager {
     pub wait_delete_segment_list: DashMap<String, EngineSegment>,
 }
 
-impl CacheManager {
-    pub fn new(rocksdb_engine_handler: Arc<RocksDBEngine>) -> CacheManager {
-        let mut cache = CacheManager {
+impl MetaCacheManager {
+    pub fn new(rocksdb_engine_handler: Arc<RocksDBEngine>) -> MetaCacheManager {
+        let mut cache = MetaCacheManager {
             node_heartbeat: DashMap::with_capacity(2),
             node_list: DashMap::with_capacity(2),
             topic_list: DashMap::with_capacity(8),
             user_list: DashMap::with_capacity(8),
-            expire_last_wills: DashMap::with_capacity(8),
             connector_list: DashMap::with_capacity(8),
             connector_heartbeat: DashMap::with_capacity(8),
             shard_list: DashMap::with_capacity(8),
@@ -100,7 +92,6 @@ impl CacheManager {
             segment_meta_list: DashMap::with_capacity(256),
             wait_delete_shard_list: DashMap::with_capacity(8),
             wait_delete_segment_list: DashMap::with_capacity(8),
-            session_list: DashMap::with_capacity(8),
             group_leader: DashMap::with_capacity(8),
         };
         cache.load_cache(rocksdb_engine_handler);
@@ -162,7 +153,7 @@ impl CacheManager {
 }
 
 pub fn load_cache(
-    cache_manager: &Arc<CacheManager>,
+    cache_manager: &Arc<MetaCacheManager>,
     rocksdb_engine_handler: &Arc<RocksDBEngine>,
 ) -> Result<(), MetaServiceError> {
     // placement

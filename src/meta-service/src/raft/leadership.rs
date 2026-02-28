@@ -13,12 +13,12 @@
 // limitations under the License.
 
 use crate::{
-    controller::{call_broker::call::BrokerCallManager, BrokerController},
-    core::cache::CacheManager,
+    controller::BrokerController,
+    core::cache::MetaCacheManager,
     raft::manager::{MultiRaftManager, RaftStateMachineName},
 };
 use grpc_clients::pool::ClientPool;
-use rocksdb_engine::rocksdb::RocksDBEngine;
+use node_call::NodeCallManager;
 use std::{sync::Arc, time::Duration};
 use tokio::{
     select,
@@ -28,11 +28,10 @@ use tokio::{
 use tracing::{error, info};
 
 pub fn monitoring_leader_transition(
-    rocksdb_engine_handler: Arc<RocksDBEngine>,
-    cache_manager: Arc<CacheManager>,
+    cache_manager: Arc<MetaCacheManager>,
     client_pool: Arc<ClientPool>,
     raft_manager: Arc<MultiRaftManager>,
-    call_manager: Arc<BrokerCallManager>,
+    call_manager: Arc<NodeCallManager>,
     stop_send: broadcast::Sender<bool>,
 ) {
     // Use the single metadata shard leader as the controller leadership source.
@@ -67,7 +66,6 @@ pub fn monitoring_leader_transition(
                                 if mm.id == current_leader{
                                     info!("[metadata] Leader transition has occurred. current leader is {:?}. previous leader was {:?}. local node id={}", current_leader, last_leader, mm.id);
                                     start_controller(
-                                        &rocksdb_engine_handler,
                                         &raft_manager,
                                         &cache_manager,
                                         &client_pool,
@@ -96,15 +94,13 @@ pub fn monitoring_leader_transition(
 }
 
 pub fn start_controller(
-    rocksdb_engine_handler: &Arc<RocksDBEngine>,
     raft_manager: &Arc<MultiRaftManager>,
-    cache_manager: &Arc<CacheManager>,
+    cache_manager: &Arc<MetaCacheManager>,
     client_pool: &Arc<ClientPool>,
-    call_manager: &Arc<BrokerCallManager>,
+    call_manager: &Arc<NodeCallManager>,
     stop_send: Sender<bool>,
 ) {
     let mqtt_controller = BrokerController::new(
-        rocksdb_engine_handler.clone(),
         raft_manager.clone(),
         cache_manager.clone(),
         call_manager.clone(),

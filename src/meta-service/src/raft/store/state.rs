@@ -321,16 +321,17 @@ mod tests {
         let storage_driver_manager = test_build_storage_driver_manager().await.unwrap();
         let delay_task_manager = Arc::new(DelayTaskManager::new(
             client_pool,
-            storage_driver_manager,
+            storage_driver_manager.clone(),
             1,
             10,
         ));
         let route = Arc::new(DataRoute::new(
             rocksdb_engine.clone(),
-            Arc::new(crate::core::cache::CacheManager::new(
+            Arc::new(crate::core::cache::MetaCacheManager::new(
                 rocksdb_engine.clone(),
             )),
             delay_task_manager.clone(),
+            storage_driver_manager.broker_cache.clone(),
         ));
 
         (rocksdb_engine, route)

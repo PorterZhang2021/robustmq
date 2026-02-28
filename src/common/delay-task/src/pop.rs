@@ -17,6 +17,7 @@ use crate::handler::lastwill_expire::handle_lastwill_expire;
 use crate::handler::session_expire::handle_session_expire;
 use crate::manager::{DelayTaskManager, SharedDelayQueue};
 use crate::{DelayTask, DelayTaskData};
+use broker_core::cache::BrokerCacheManager;
 use common_base::error::common::CommonError;
 use common_base::tools::now_second;
 use common_metrics::mqtt::delay_task::{
@@ -24,6 +25,7 @@ use common_metrics::mqtt::delay_task::{
     record_delay_task_schedule_latency,
 };
 use futures::StreamExt;
+use node_call::NodeCallManager;
 use rocksdb_engine::rocksdb::RocksDBEngine;
 use std::sync::Arc;
 use std::time::Duration;
@@ -36,6 +38,8 @@ const POP_LOCK_TIMEOUT_MS: u64 = 100;
 pub(crate) fn spawn_delay_task_pop_threads(
     rocksdb_engine_handler: &Arc<RocksDBEngine>,
     delay_task_manager: &Arc<DelayTaskManager>,
+    node_call_manager: &Arc<NodeCallManager>,
+    broker_cache: &Arc<BrokerCacheManager>,
     delay_queue_num: u32,
 ) {
     info!("Starting delay task pop threads ({})", delay_queue_num);
@@ -46,6 +50,8 @@ pub(crate) fn spawn_delay_task_pop_threads(
         let (stop_send, _) = broadcast::channel(2);
         delay_task_manager.add_delay_queue_pop_thread(shard_no, stop_send.clone());
         let raw_rocksdb_engine_handler = rocksdb_engine_handler.clone();
+        let raw_node_call_manager = node_call_manager.clone();
+        let raw_broker_cache = broker_cache.clone();
         tokio::spawn(async move {
             info!("Delay task pop thread started for shard {}", shard_no);
             let mut recv = stop_send.subscribe();
@@ -64,7 +70,7 @@ pub(crate) fn spawn_delay_task_pop_threads(
                             _ => {}
                         }
                     }
-                    res = pop_delay_queue(&raw_rocksdb_engine_handler,&manager, shard_no) => {
+                    res = pop_delay_queue(&raw_rocksdb_engine_handler, &manager, &raw_node_call_manager, &raw_broker_cache, shard_no) => {
                         if let Err(e) = res {
                             error!("Delay task pop error on shard {}: {}", shard_no, e);
                         }
@@ -78,6 +84,8 @@ pub(crate) fn spawn_delay_task_pop_threads(
 async fn pop_delay_queue(
     rocksdb_engine_handler: &Arc<RocksDBEngine>,
     delay_task_manager: &Arc<DelayTaskManager>,
+    node_call_manager: &Arc<NodeCallManager>,
+    broker_cache: &Arc<BrokerCacheManager>,
     shard_no: u32,
 ) -> Result<(), CommonError> {
     let queue_arc: SharedDelayQueue =
@@ -104,6 +112,8 @@ async fn pop_delay_queue(
             spawn_task_process(
                 rocksdb_engine_handler.clone(),
                 delay_task_manager.clone(),
+                node_call_manager.clone(),
+                broker_cache.clone(),
                 task,
             )
             .await;
@@ -127,6 +137,8 @@ async fn pop_delay_queue(
 pub(crate) async fn spawn_task_process(
     rocksdb_engine_handler: Arc<RocksDBEngine>,
     delay_task_manager: Arc<DelayTaskManager>,
+    node_call_manager: Arc<NodeCallManager>,
+    broker_cache: Arc<BrokerCacheManager>,
     task: DelayTask,
 ) {
     let permit = match delay_task_manager
@@ -148,8 +160,14 @@ pub(crate) async fn spawn_task_process(
     tokio::spawn(async move {
         let _permit = permit;
         let task_type_str = task.task_type_name();
-        if let Err(e) =
-            delay_task_process(&delay_task_manager, &rocksdb_engine_handler, &task).await
+        if let Err(e) = delay_task_process(
+            &delay_task_manager,
+            &node_call_manager,
+            &rocksdb_engine_handler,
+            &broker_cache,
+            &task,
+        )
+        .await
         {
             record_delay_task_execute_failed(task_type_str);
             error!(
@@ -162,7 +180,9 @@ pub(crate) async fn spawn_task_process(
 
 pub async fn delay_task_process(
     delay_task_manager: &Arc<DelayTaskManager>,
+    node_call_manager: &Arc<NodeCallManager>,
     rocksdb_engine_handler: &Arc<RocksDBEngine>,
+    broker_cache: &Arc<BrokerCacheManager>,
     task: &DelayTask,
 ) -> Result<(), CommonError> {
     let task_type_str = task.task_type_name();
@@ -178,10 +198,17 @@ pub async fn delay_task_process(
 
     match &task.data {
         DelayTaskData::MQTTSessionExpire(client_id) => {
-            handle_session_expire(client_id, rocksdb_engine_handler).await?;
+            handle_session_expire(
+                node_call_manager,
+                rocksdb_engine_handler,
+                broker_cache,
+                delay_task_manager,
+                client_id,
+            )
+            .await?;
         }
         DelayTaskData::MQTTLastwillExpire(client_id) => {
-            handle_lastwill_expire(client_id).await?;
+            handle_lastwill_expire(rocksdb_engine_handler, node_call_manager, client_id).await?;
         }
     }
 

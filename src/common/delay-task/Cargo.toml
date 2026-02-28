@@ -34,3 +34,5 @@ metadata-struct.workspace = true
 broker-core.workspace = true
 common-metrics.workspace = true
 rocksdb-engine.workspace = true
+node-call.workspace = true
+protocol.workspace = true

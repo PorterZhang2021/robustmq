@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::controller::call_broker::call::BrokerCallManager;
-use crate::core::cache::CacheManager;
+use crate::core::cache::MetaCacheManager;
 use crate::raft::manager::MultiRaftManager;
 use crate::server::services::mqtt::acl::{
     create_acl_by_req, create_blacklist_by_req, delete_acl_by_req, delete_blacklist_by_req,
@@ -40,7 +39,10 @@ use crate::server::services::mqtt::topic::{
 use crate::server::services::mqtt::user::{
     create_user_by_req, delete_user_by_req, list_user_by_req,
 };
+use broker_core::cache::BrokerCacheManager;
+use delay_task::manager::DelayTaskManager;
 use grpc_clients::pool::ClientPool;
+use node_call::NodeCallManager;
 use prost_validate::Validator;
 use protocol::meta::meta_service_mqtt::mqtt_service_server::MqttService;
 use protocol::meta::meta_service_mqtt::{
@@ -71,27 +73,33 @@ use tonic::codegen::tokio_stream::Stream;
 use tonic::{Request, Response, Status};
 
 pub struct GrpcMqttService {
-    cache_manager: Arc<CacheManager>,
+    cache_manager: Arc<MetaCacheManager>,
     raft_manager: Arc<MultiRaftManager>,
     rocksdb_engine_handler: Arc<RocksDBEngine>,
-    call_manager: Arc<BrokerCallManager>,
+    delay_task_manager: Arc<DelayTaskManager>,
+    call_manager: Arc<NodeCallManager>,
+    broker_cache: Arc<BrokerCacheManager>,
     client_pool: Arc<ClientPool>,
 }
 
 impl GrpcMqttService {
     pub fn new(
-        cache_manager: Arc<CacheManager>,
+        cache_manager: Arc<MetaCacheManager>,
         raft_manager: Arc<MultiRaftManager>,
         rocksdb_engine_handler: Arc<RocksDBEngine>,
-        call_manager: Arc<BrokerCallManager>,
+        delay_task_manager: Arc<DelayTaskManager>,
+        call_manager: Arc<NodeCallManager>,
+        broker_cache: Arc<BrokerCacheManager>,
         client_pool: Arc<ClientPool>,
     ) -> Self {
         GrpcMqttService {
             cache_manager,
             raft_manager,
             rocksdb_engine_handler,
+            delay_task_manager,
             call_manager,
             client_pool,
+            broker_cache,
         }
     }
 
@@ -168,7 +176,7 @@ impl MqttService for GrpcMqttService {
         let req = request.into_inner();
         self.validate_request(&req)?;
 
-        list_session_by_req(&self.cache_manager, &self.rocksdb_engine_handler, &req)
+        list_session_by_req(&self.broker_cache, &self.rocksdb_engine_handler, &req)
             .map_err(Self::to_status)
             .map(Response::new)
     }
@@ -200,10 +208,10 @@ impl MqttService for GrpcMqttService {
 
         delete_session_by_req(
             &self.raft_manager,
+            &self.delay_task_manager,
             &self.call_manager,
-            &self.client_pool,
             &self.rocksdb_engine_handler,
-            &self.cache_manager,
+            &self.broker_cache,
             &req,
         )
         .await
@@ -236,7 +244,6 @@ impl MqttService for GrpcMqttService {
         create_topic_by_req(
             &self.raft_manager,
             &self.call_manager,
-            &self.client_pool,
             &self.rocksdb_engine_handler,
             &req,
         )
@@ -495,7 +502,6 @@ impl MqttService for GrpcMqttService {
             &self.raft_manager,
             &self.rocksdb_engine_handler,
             &self.call_manager,
-            &self.client_pool,
             &req,
         )
         .await

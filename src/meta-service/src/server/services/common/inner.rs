@@ -12,10 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::controller::call_broker::call::BrokerCallManager;
-use crate::controller::call_broker::mqtt::update_cache_by_set_resource_config;
-use crate::core::cache::CacheManager;
+use crate::core::cache::MetaCacheManager;
 use crate::core::error::MetaServiceError;
+use crate::core::notify::send_notify_by_set_resource_config;
 use crate::raft::manager::MultiRaftManager;
 use crate::raft::route::data::{StorageData, StorageDataType};
 use crate::storage::common::config::ResourceConfigStorage;
@@ -24,6 +23,7 @@ use common_base::tools::now_second;
 use common_base::utils::serialize::encode_to_bytes;
 use grpc_clients::pool::ClientPool;
 use metadata_struct::resource_config::ResourceConfig;
+use node_call::NodeCallManager;
 use protocol::meta::meta_service_common::{
     ClusterStatusReply, DeleteResourceConfigReply, DeleteResourceConfigRequest, GetOffsetDataReply,
     GetOffsetDataReplyOffset, GetOffsetDataRequest, GetResourceConfigReply,
@@ -56,7 +56,7 @@ pub async fn cluster_status_by_req(
 
 // Node Management
 pub async fn node_list_by_req(
-    cluster_cache: &Arc<CacheManager>,
+    cluster_cache: &Arc<MetaCacheManager>,
     _req: &NodeListRequest,
 ) -> Result<NodeListReply, MetaServiceError> {
     let nodes = cluster_cache
@@ -70,7 +70,7 @@ pub async fn node_list_by_req(
 
 // Heartbeat
 pub async fn heartbeat_by_req(
-    cluster_cache: &Arc<CacheManager>,
+    cluster_cache: &Arc<MetaCacheManager>,
     req: &HeartbeatRequest,
 ) -> Result<HeartbeatReply, MetaServiceError> {
     // Check if node exists
@@ -92,8 +92,8 @@ pub async fn heartbeat_by_req(
 // Resource Config
 pub async fn set_resource_config_by_req(
     raft_manager: &Arc<MultiRaftManager>,
-    call_manager: &Arc<BrokerCallManager>,
-    client_pool: &Arc<ClientPool>,
+    call_manager: &Arc<NodeCallManager>,
+    _client_pool: &Arc<ClientPool>,
     req: &SetResourceConfigRequest,
 ) -> Result<SetResourceConfigReply, MetaServiceError> {
     let data = StorageData::new(StorageDataType::ResourceConfigSet, encode_to_bytes(req));
@@ -105,7 +105,7 @@ pub async fn set_resource_config_by_req(
         config: req.config.clone().into(),
     };
 
-    update_cache_by_set_resource_config(call_manager, client_pool, config).await?;
+    send_notify_by_set_resource_config(call_manager, config).await?;
 
     Ok(SetResourceConfigReply::default())
 }

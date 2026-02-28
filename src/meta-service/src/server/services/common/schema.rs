@@ -12,13 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::controller::call_broker::call::BrokerCallManager;
 use crate::{
-    controller::call_broker::mqtt::{
-        update_cache_by_add_schema, update_cache_by_add_schema_bind, update_cache_by_delete_schema,
-        update_cache_by_delete_schema_bind,
-    },
     core::error::MetaServiceError,
+    core::notify::{
+        send_notify_by_add_schema, send_notify_by_add_schema_bind, send_notify_by_delete_schema,
+        send_notify_by_delete_schema_bind,
+    },
     raft::{
         manager::MultiRaftManager,
         route::data::{StorageData, StorageDataType},
@@ -28,6 +27,7 @@ use crate::{
 use common_base::utils::serialize::encode_to_bytes;
 use grpc_clients::pool::ClientPool;
 use metadata_struct::schema::{SchemaData, SchemaResourceBind};
+use node_call::NodeCallManager;
 use prost_validate::Result;
 use protocol::meta::meta_service_common::{
     BindSchemaRequest, CreateSchemaRequest, DeleteSchemaRequest, ListBindSchemaRequest,
@@ -89,8 +89,8 @@ pub fn list_schema_req(
 
 pub async fn create_schema_req(
     raft_manager: &Arc<MultiRaftManager>,
-    call_manager: &Arc<BrokerCallManager>,
-    client_pool: &Arc<ClientPool>,
+    call_manager: &Arc<NodeCallManager>,
+    _client_pool: &Arc<ClientPool>,
     req: &CreateSchemaRequest,
     rocksdb_engine_handler: &Arc<RocksDBEngine>,
 ) -> Result<(), MetaServiceError> {
@@ -109,7 +109,7 @@ pub async fn create_schema_req(
     raft_manager.write_metadata(data).await?;
 
     let schema = SchemaData::decode(&req.schema)?;
-    update_cache_by_add_schema(call_manager, client_pool, schema).await?;
+    send_notify_by_add_schema(call_manager, schema).await?;
 
     Ok(())
 }
@@ -117,8 +117,8 @@ pub async fn create_schema_req(
 pub async fn update_schema_req(
     rocksdb_engine_handler: &Arc<RocksDBEngine>,
     raft_manager: &Arc<MultiRaftManager>,
-    call_manager: &Arc<BrokerCallManager>,
-    client_pool: &Arc<ClientPool>,
+    call_manager: &Arc<NodeCallManager>,
+    _client_pool: &Arc<ClientPool>,
     req: &UpdateSchemaRequest,
 ) -> Result<(), MetaServiceError> {
     validate_schema_fields(&req.schema_name, &req.schema)?;
@@ -134,7 +134,7 @@ pub async fn update_schema_req(
     raft_manager.write_metadata(data).await?;
 
     let schema = SchemaData::decode(&req.schema)?;
-    update_cache_by_add_schema(call_manager, client_pool, schema).await?;
+    send_notify_by_add_schema(call_manager, schema).await?;
 
     Ok(())
 }
@@ -142,8 +142,8 @@ pub async fn update_schema_req(
 pub async fn delete_schema_req(
     rocksdb_engine_handler: &Arc<RocksDBEngine>,
     raft_manager: &Arc<MultiRaftManager>,
-    call_manager: &Arc<BrokerCallManager>,
-    client_pool: &Arc<ClientPool>,
+    call_manager: &Arc<NodeCallManager>,
+    _client_pool: &Arc<ClientPool>,
     req: &DeleteSchemaRequest,
 ) -> Result<(), MetaServiceError> {
     validate_non_empty(&req.schema_name, "schema_name")?;
@@ -158,7 +158,7 @@ pub async fn delete_schema_req(
     let data = StorageData::new(StorageDataType::SchemaDelete, encode_to_bytes(req));
     raft_manager.write_metadata(data).await?;
 
-    update_cache_by_delete_schema(call_manager, client_pool, schema).await?;
+    send_notify_by_delete_schema(call_manager, schema).await?;
 
     Ok(())
 }
@@ -204,8 +204,8 @@ pub async fn list_bind_schema_req(
 
 pub async fn bind_schema_req(
     raft_manager: &Arc<MultiRaftManager>,
-    call_manager: &Arc<BrokerCallManager>,
-    client_pool: &Arc<ClientPool>,
+    call_manager: &Arc<NodeCallManager>,
+    _client_pool: &Arc<ClientPool>,
     req: &BindSchemaRequest,
 ) -> Result<(), MetaServiceError> {
     validate_bind_fields(&req.schema_name, &req.resource_name)?;
@@ -217,15 +217,15 @@ pub async fn bind_schema_req(
         schema_name: req.schema_name.clone(),
         resource_name: req.resource_name.clone(),
     };
-    update_cache_by_add_schema_bind(call_manager, client_pool, schema_data).await?;
+    send_notify_by_add_schema_bind(call_manager, schema_data).await?;
 
     Ok(())
 }
 
 pub async fn un_bind_schema_req(
     raft_manager: &Arc<MultiRaftManager>,
-    call_manager: &Arc<BrokerCallManager>,
-    client_pool: &Arc<ClientPool>,
+    call_manager: &Arc<NodeCallManager>,
+    _client_pool: &Arc<ClientPool>,
     req: &UnBindSchemaRequest,
 ) -> Result<(), MetaServiceError> {
     validate_bind_fields(&req.schema_name, &req.resource_name)?;
@@ -237,7 +237,7 @@ pub async fn un_bind_schema_req(
         schema_name: req.schema_name.clone(),
         resource_name: req.resource_name.clone(),
     };
-    update_cache_by_delete_schema_bind(call_manager, client_pool, schema_data).await?;
+    send_notify_by_delete_schema_bind(call_manager, schema_data).await?;
 
     Ok(())
 }

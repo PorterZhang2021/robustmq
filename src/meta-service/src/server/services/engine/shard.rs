@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::controller::call_broker::call::BrokerCallManager;
-use crate::core::cache::CacheManager;
+use crate::core::cache::MetaCacheManager;
 use crate::core::error::MetaServiceError;
 use crate::core::segment::create_segment;
 use crate::core::shard::{create_shard, update_shard_status};
@@ -21,6 +20,7 @@ use crate::raft::manager::MultiRaftManager;
 use crate::storage::journal::shard::ShardStorage;
 use grpc_clients::pool::ClientPool;
 use metadata_struct::storage::shard::{EngineShard, EngineShardConfig, EngineShardStatus};
+use node_call::NodeCallManager;
 use protocol::meta::meta_service_journal::{
     CreateShardReply, CreateShardRequest, DeleteShardReply, DeleteShardRequest, ListShardReply,
     ListShardRequest,
@@ -54,9 +54,9 @@ pub async fn list_shard_by_req(
 }
 
 pub async fn create_shard_by_req(
-    cache_manager: &Arc<CacheManager>,
+    cache_manager: &Arc<MetaCacheManager>,
     raft_manager: &Arc<MultiRaftManager>,
-    call_manager: &Arc<BrokerCallManager>,
+    call_manager: &Arc<NodeCallManager>,
     client_pool: &Arc<ClientPool>,
     req: &CreateShardRequest,
 ) -> Result<CreateShardReply, MetaServiceError> {
@@ -74,9 +74,9 @@ pub async fn create_shard_by_req(
         cache_manager,
         raft_manager,
         call_manager,
-        client_pool,
         &req.shard_name,
         shard_config,
+        &req.desc,
     )
     .await?;
 
@@ -106,8 +106,8 @@ pub async fn create_shard_by_req(
 
 pub async fn delete_shard_by_req(
     raft_manager: &Arc<MultiRaftManager>,
-    cache_manager: &Arc<CacheManager>,
-    call_manager: &Arc<BrokerCallManager>,
+    cache_manager: &Arc<MetaCacheManager>,
+    call_manager: &Arc<NodeCallManager>,
     client_pool: &Arc<ClientPool>,
     req: &DeleteShardRequest,
 ) -> Result<DeleteShardReply, MetaServiceError> {
