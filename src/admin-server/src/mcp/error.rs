@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub mod common;
-pub mod engine;
-pub mod group_gc;
-pub mod mcp_test;
-pub mod mqtt;
-pub mod nats;
-pub mod node_call;
-pub mod offset_test;
-pub mod topic_test;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum McpToolError {
+    #[error("{0}")]
+    BrokerError(String),
+    #[error("serialization error: {0}")]
+    SerdeError(#[from] serde_json::Error),
+}
