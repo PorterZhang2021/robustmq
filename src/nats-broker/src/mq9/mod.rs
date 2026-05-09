@@ -12,9 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub mod agent;
 pub mod create;
 pub mod delete;
-pub mod list;
 pub mod process;
-pub mod publish;
+pub mod query;
+pub mod send;
 pub mod subscribe;
+
+pub fn scoped_key(tenant: &str, mail_address: &str, key: &str) -> String {
+    format!("{}/{}/{}", tenant, mail_address, key)
+}
+
+pub fn scoped_tag(tenant: &str, mail_address: &str, tag: &str) -> String {
+    format!("{}/{}/{}", tenant, mail_address, tag)
+}

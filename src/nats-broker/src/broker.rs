@@ -21,8 +21,8 @@ use broker_core::cache::NodeCacheManager;
 use common_base::task::{TaskKind, TaskSupervisor};
 use common_config::broker::broker_config;
 use common_security::manager::SecurityManager;
+use delay_message::manager::DelayMessageManager;
 use grpc_clients::pool::ClientPool;
-use mq9_core::public::try_init_system_mail;
 use network_server::common::channel::RequestChannel;
 use network_server::common::connection_manager::ConnectionManager;
 use rate_limit::global::GlobalRateLimiterManager;
@@ -44,6 +44,7 @@ pub struct NatsBrokerServerParams {
     pub request_channel: Arc<RequestChannel>,
     pub storage_driver_manager: Arc<StorageDriverManager>,
     pub security_manager: Arc<SecurityManager>,
+    pub delay_message_manager: Arc<DelayMessageManager>,
 }
 
 pub struct NatsBrokerServer {
@@ -97,17 +98,6 @@ impl NatsBrokerServer {
 
     pub async fn start(&self) {
         let conf = broker_config();
-
-        if let Err(e) = try_init_system_mail(
-            &self.cache_manager.node_cache,
-            &self.storage_driver_manager,
-            &self.client_pool,
-        )
-        .await
-        {
-            error!("Failed to init system mailbox: {}", e);
-            std::process::exit(1);
-        }
 
         start_sub_task(
             &self.subscribe_manager,
