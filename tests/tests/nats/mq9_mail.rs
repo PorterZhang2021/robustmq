@@ -44,7 +44,7 @@ mod tests {
 
         // ── create private mail (ttl=30) ──────────────────────────────────────
         let req = MailboxCreateReq {
-            name: Some(format!("{}", &unique_id().to_lowercase())),
+            name: Some(unique_id().to_lowercase().to_string()),
             ttl: Some(TTL),
             desc: None,
         };
@@ -97,7 +97,7 @@ mod tests {
         let nats_client = nats_connect().await;
 
         // ── create mail with prefix ───────────────────────────────────────────
-        let name = format!("risk{}", &unique_id().to_lowercase()[..8]);
+        let name = format!("risk{}", unique_id().to_lowercase());
         let req = MailboxCreateReq {
             name: Some(name.clone()),
             ttl: None,

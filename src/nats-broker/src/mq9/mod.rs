@@ -15,10 +15,10 @@
 pub mod agent;
 pub mod create;
 pub mod delete;
+pub mod fetch;
 pub mod process;
 pub mod query;
 pub mod send;
-pub mod subscribe;
 
 pub fn scoped_key(tenant: &str, mail_address: &str, key: &str) -> String {
     format!("{}/{}/{}", tenant, mail_address, key)

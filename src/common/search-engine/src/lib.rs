@@ -11,11 +11,3 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-
-pub mod agent_core;
-pub mod common;
-pub mod mq9_core;
-pub mod mq9_mail;
-pub mod mq9_priority;
-pub mod nats_core;
-pub mod nats_queue;
