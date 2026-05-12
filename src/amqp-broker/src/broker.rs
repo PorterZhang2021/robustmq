@@ -15,6 +15,7 @@
 use crate::server::{AmqpServer, AmqpServerParams};
 use broker_core::cache::NodeCacheManager;
 use common_base::task::TaskSupervisor;
+use common_config::broker::broker_config;
 use grpc_clients::pool::ClientPool;
 use network_server::common::channel::RequestChannel;
 use network_server::common::connection_manager::ConnectionManager;
@@ -23,8 +24,6 @@ use std::sync::Arc;
 use storage_adapter::driver::StorageDriverManager;
 use tokio::sync::broadcast;
 use tracing::{error, info};
-
-const DEFAULT_AMQP_PORT: u32 = 5672;
 
 #[derive(Clone)]
 pub struct AmqpBrokerServerParams {
@@ -62,7 +61,8 @@ impl AmqpBrokerServer {
     }
 
     pub async fn start(&self) {
-        if let Err(e) = self.server.start(DEFAULT_AMQP_PORT).await {
+        let port = broker_config().amqp_runtime.tcp_port;
+        if let Err(e) = self.server.start(port).await {
             error!("AMQP broker server failed to start: {}", e);
             std::process::exit(1);
         }

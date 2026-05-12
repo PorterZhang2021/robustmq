@@ -148,6 +148,15 @@ impl MultiRaftManager {
         Ok(())
     }
 
+    pub fn is_metadata_leader(&self) -> bool {
+        let shard_name = format!("{}_0", RaftStateMachineName::METADATA.as_str());
+        let Some(node) = self.metadata.get_node(&shard_name) else {
+            return false;
+        };
+        let m = node.metrics().borrow().clone();
+        m.current_leader == Some(m.id)
+    }
+
     pub fn get_raft_node(&self, shard_name: &str) -> Result<&Raft<TypeConfig>, MetaServiceError> {
         if matches!(shard_name, "metadata" | "meta") {
             return self.metadata.get_node("metadata_0").ok_or_else(|| {
@@ -304,9 +313,9 @@ impl MultiRaftManager {
         route: &Arc<DataRoute>,
     ) -> Result<Raft<TypeConfig>, CommonError> {
         let config = Config {
-            heartbeat_interval: 100,
-            election_timeout_min: 1000,
-            election_timeout_max: 2000,
+            heartbeat_interval: 500,
+            election_timeout_min: 1500,
+            election_timeout_max: 3000,
             ..Default::default()
         };
 
