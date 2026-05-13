@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use amqp_broker::broker::AmqpBrokerServerParams;
+use broker_core::tenant::try_init_default_tenant;
 use broker_core::{
     cache::NodeCacheManager,
     heartbeat::{check_meta_service_status, register_node_and_start_heartbeat},
@@ -29,6 +30,7 @@ use common_config::{broker::broker_config, config::BrokerConfig};
 use common_group::manager::OffsetManager;
 use common_healthy::port::wait_for_grpc_ready;
 use common_metrics::init_metrics;
+use common_security::login::super_user::try_init_system_user;
 use common_security::manager::SecurityManager;
 use delay_message::manager::DelayMessageManager;
 use delay_task::manager::DelayTaskManager;
@@ -381,16 +383,15 @@ impl BrokerServer {
     }
 
     pub fn start(&self) {
-        let config = broker_config();
-        let monitor_interval_ms = config.prometheus.monitor_interval_ms;
-
         // Phase 1: Network-facing servers
         self.start_grpc_server();
         self.start_admin_server();
-        self.start_pprof_server();
-        self.start_prometheus_server();
 
         if !wait_for_grpc_ready(self.config.grpc_port) {
+            error!(
+                "GRPC server failed to become ready on port {}, exiting",
+                self.config.grpc_port
+            );
             std::process::exit(1);
         }
 
@@ -425,23 +426,31 @@ impl BrokerServer {
             .await;
         });
 
-        // Phase 5.5: Initialize internal topics
+        // Phase 6: Engine service
+        let engine_stop_send = self.start_engine_service();
+
+        // Phase 7: Initialize internal topics, default tenant and system user
         let broker_cache = self.broker_cache.clone();
         let storage_driver_manager = self.mqtt_params.storage_driver_manager.clone();
         let client_pool = self.client_pool.clone();
         self.server_runtime.block_on(async {
+            if let Err(e) = try_init_default_tenant(&broker_cache, &client_pool).await {
+                error!("Failed to initialize default tenant: {}", e);
+                std::process::exit(1);
+            }
             if let Err(e) =
                 init_inner_topics(&broker_cache, &storage_driver_manager, &client_pool).await
             {
                 error!("Failed to initialize inner topics: {}", e);
                 std::process::exit(1);
             }
+            if let Err(e) = try_init_system_user(&client_pool).await {
+                error!("Failed to initialize system user: {}", e);
+                std::process::exit(1);
+            }
         });
 
-        // Phase 6: Engine service
-        let engine_stop_send = self.start_engine_service();
-
-        // Phase 7: Start MQTT broker, extract stop sender and command adapter.
+        // Phase 8: Start MQTT broker, extract stop sender and command adapter.
         let (mqtt_stop_send, mqtt_cmd) = self.server_runtime.block_on(async {
             match self.create_mqtt_server().await {
                 Some((stop_send, server, cmd)) => {
@@ -452,20 +461,21 @@ impl BrokerServer {
             }
         });
 
-        // Phase 8: Build command registry and start handler pool.
+        // Phase 9: Build command registry and start handler pool.
         let (network_handler_stop_send, _) = broadcast::channel(2);
         let commands = self.create_command_registry(mqtt_cmd);
         self.server_runtime.block_on(async {
             self.start_broker_handler_pool(commands, network_handler_stop_send.clone());
         });
 
-        // Phase 9: Broker protocol acceptors
+        // Phase 10: Broker protocol acceptors
         let kafka_stop_send = self.start_kafka_broker();
         let amqp_stop_send = self.start_amqp_broker();
         let nats_stop_send = self.start_nats_broker();
 
-        // Phase 10: Background services
+        // Phase 11: Background services
         self.server_runtime.block_on(async {
+            let monitor_interval_ms = 10_000u64;
             self.start_background_services(broker_common_stop.clone(), monitor_interval_ms)
                 .await;
         });

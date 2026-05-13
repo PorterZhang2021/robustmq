@@ -71,6 +71,7 @@ pub fn default_runtime() -> Runtime {
         channels_per_address: 4,
         tls_cert: "./config/certs/cert.pem".to_string(),
         tls_key: "./config/certs/key.pem".to_string(),
+        pprof_enable: false,
     }
 }
 
@@ -362,14 +363,6 @@ pub fn default_slow_subscribe_record_time() -> u64 {
 }
 pub fn default_slow_subscribe_delay_type() -> DelayType {
     DelayType::Whole
-}
-
-// PProf
-pub fn default_pprof_port() -> u16 {
-    9090
-}
-pub fn default_pprof_frequency() -> i32 {
-    100
 }
 
 // StorageRuntime
