@@ -64,43 +64,145 @@ _BROKERS: dict = {}
 #   ...
 # }
 
-_BROKER_PORTS = {
-    "broker-1": 1883,
-    "broker-2": 2883,
-    "broker-3": 3883,
-}
-
-_HEALTH_TIMEOUT = 5   # seconds to wait before health check
-_HEALTH_URL_TEMPLATE = "http://127.0.0.1:{port}/health"
+_SINGLE_NODE = "broker-1"
+_MQTT_PORT = 1883
+_HTTP_PORT = 8080
+_GRPC_PORT = 1228
+_HEALTH_TIMEOUT = 30  # seconds total for health check polling
+_HEALTH_INTERVAL = 2  # seconds between polls
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _robustmq_binary() -> Optional[str]:
     home = os.environ.get("ROBUSTMQ_HOME", "").strip()
     if not home:
         return None
-    # Expect the binary to be at $ROBUSTMQ_HOME/bin/robustmq-server
-    # or directly at $ROBUSTMQ_HOME/robustmq-server.
     candidates = [
-        Path(home) / "bin" / "robustmq-server",
-        Path(home) / "robustmq-server",
+        Path(home) / "bin" / "broker-server",
+        Path(home) / "broker-server",
     ]
     for c in candidates:
         if c.is_file():
             return str(c)
-    # Return the first candidate path so the error message is actionable.
     return str(candidates[0])
 
 
-def _health_check(port: int) -> bool:
-    url = _HEALTH_URL_TEMPLATE.format(port=port)
+def _project_root() -> Optional[str]:
+    """Walk up from ROBUSTMQ_HOME until config/server.toml is found."""
+    home = os.environ.get("ROBUSTMQ_HOME", "").strip()
+    if not home:
+        return None
+    p = Path(home).resolve()
+    for candidate in [p, p.parent, p.parent.parent, p.parent.parent.parent]:
+        if (candidate / "config" / "server.toml").is_file():
+            return str(candidate)
+    return None
+
+
+def _generate_logger_toml(data_dir: str) -> str:
+    return f"""[stdout]
+kind = "console"
+targets = [
+    {{ path = "", level = "info" }},
+]
+
+[server]
+kind = "rolling_file"
+targets = [
+    {{ path = "", level = "info" }},
+]
+rotation = "daily"
+directory = "{data_dir}/logs"
+prefix = "server"
+suffix = "log"
+max_log_files = 10
+"""
+
+
+def _generate_toml(data_dir: str, http_port: int, grpc_port: int) -> str:
+    project_root = _project_root() or "."
+    cert_path = os.path.join(project_root, "config", "certs", "cert.pem")
+    key_path = os.path.join(project_root, "config", "certs", "key.pem")
+    return f"""cluster_name = "broker-server"
+broker_id = 1
+broker_ip = "127.0.0.1"
+roles = ["meta", "broker", "engine"]
+grpc_port = {grpc_port}
+http_port = {http_port}
+meta_addrs = {{ 1 = "127.0.0.1:{grpc_port}" }}
+
+[rocksdb]
+data_path = "{data_dir}/data"
+max_open_files = 10000
+
+[pprof]
+enable = false
+port = 6777
+frequency = 1000
+
+[log]
+log_config = "{data_dir}/logger.toml"
+log_path = "{data_dir}/logs"
+
+[network]
+accept_thread_num = 1
+handler_thread_num = 64
+queue_size = 5000
+keep_alive_enable = false
+
+[mqtt_keep_alive]
+enable = true
+default_time = 180
+max_time = 3600
+default_timeout = 2
+
+[prometheus]
+enable = false
+port = 9091
+monitor_interval_ms = 10000
+
+[mqtt_system_topic]
+interval_ms = 60000
+
+[mqtt_offline_message]
+enable = true
+expire_ms = 3600000
+max_messages_num = 100000
+
+[storage_offset]
+enable_cache = true
+
+[storage_runtime]
+tcp_port = 1779
+max_segment_size = 1073741824
+data_path = ["{data_dir}/engine"]
+io_thread_num = 4
+
+[runtime]
+tls_cert = "{cert_path}"
+tls_key = "{key_path}"
+
+[grpc_client]
+channels_per_address = 4
+"""
+
+
+def _health_check(mqtt_port: int) -> bool:
+    """Check readiness by attempting a TCP connection to the MQTT port.
+
+    The /api/health/ready endpoint checks the QUIC port via TCP which always
+    fails (QUIC is UDP). Checking the MQTT TCP port directly is more reliable.
+    """
+    import socket
+
     try:
-        with urllib.request.urlopen(url, timeout=3) as resp:
-            return resp.status == 200
-    except (urllib.error.URLError, OSError):
+        with socket.create_connection(("127.0.0.1", mqtt_port), timeout=2):
+            return True
+    except OSError:
         return False
 
 
@@ -129,6 +231,7 @@ def _cleanup_data_dirs(data_dirs: list) -> None:
 # Actions
 # ---------------------------------------------------------------------------
 
+
 def _action_start() -> dict:
     binary = _robustmq_binary()
     if binary is None:
@@ -142,77 +245,70 @@ def _action_start() -> dict:
     if not Path(binary).is_file():
         return {
             "error": (
-                f"RobustMQ binary not found at {binary}. "
+                f"broker-server binary not found at {binary}. "
                 "Check that ROBUSTMQ_HOME points to a valid installation."
             )
         }
 
     if _BROKERS:
         return {
-            "error": (
-                "Cluster is already running. "
-                "Call stop first if you want to restart."
+            "error": "Cluster is already running. Call stop first if you want to restart."
+        }
+
+    data_dir = tempfile.mkdtemp(prefix=f"rmq-{_SINGLE_NODE}-")
+    Path(data_dir, "logs").mkdir(parents=True, exist_ok=True)
+    Path(data_dir, "data").mkdir(parents=True, exist_ok=True)
+    Path(data_dir, "engine").mkdir(parents=True, exist_ok=True)
+
+    logger_toml_path = Path(data_dir) / "logger.toml"
+    logger_toml_path.write_text(_generate_logger_toml(data_dir))
+
+    toml_content = _generate_toml(data_dir, http_port=_HTTP_PORT, grpc_port=_GRPC_PORT)
+    toml_path = Path(data_dir) / "server.toml"
+    toml_path.write_text(toml_content)
+
+    log_file = Path(data_dir) / "logs" / "broker.log"
+    try:
+        with open(log_file, "w") as lf:
+            proc = subprocess.Popen(
+                [binary, "--conf", str(toml_path)],
+                stdout=lf,
+                stderr=subprocess.STDOUT,
+                close_fds=True,
             )
-        }
+    except OSError as exc:
+        _cleanup_data_dirs([data_dir])
+        return {"error": f"Failed to start {_SINGLE_NODE}: {exc}"}
 
-    data_dirs: list[str] = []
-    started: list[str] = []
+    _BROKERS[_SINGLE_NODE] = {
+        "process": proc,
+        "mqtt_port": _MQTT_PORT,
+        "http_port": _HTTP_PORT,
+        "data_dir": data_dir,
+        "node_name": _SINGLE_NODE,
+    }
 
-    for node_name, port in _BROKER_PORTS.items():
-        data_dir = tempfile.mkdtemp(prefix=f"rmq-{node_name}-")
-        data_dirs.append(data_dir)
-
-        log_dir = Path(data_dir) / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        log_file = log_dir / "broker.log"
-
-        cmd = [
-            binary,
-            "--node-name", node_name,
-            "--mqtt-port", str(port),
-            "--data-dir", data_dir,
-        ]
-
-        try:
-            with open(log_file, "w") as lf:
-                proc = subprocess.Popen(
-                    cmd,
-                    stdout=lf,
-                    stderr=subprocess.STDOUT,
-                    close_fds=True,
-                )
-        except OSError as exc:
-            _kill_all()
-            _cleanup_data_dirs(data_dirs)
-            return {"error": f"Failed to start {node_name}: {exc}"}
-
-        _BROKERS[node_name] = {
-            "process": proc,
-            "port": port,
-            "data_dir": data_dir,
-            "node_name": node_name,
-        }
-        started.append(node_name)
-
-    # Wait then health-check the first broker as cluster representative.
-    time.sleep(_HEALTH_TIMEOUT)
-    if not _health_check(_BROKER_PORTS["broker-1"]):
+    deadline = time.monotonic() + _HEALTH_TIMEOUT
+    while time.monotonic() < deadline:
+        if _health_check(_MQTT_PORT):
+            break
+        time.sleep(_HEALTH_INTERVAL)
+    else:
         _kill_all()
-        _cleanup_data_dirs(data_dirs)
+        _cleanup_data_dirs([data_dir])
         return {
             "status": "failed",
             "error": (
-                "Health check failed for broker-1 on port 1883 after "
-                f"{_HEALTH_TIMEOUT}s. Check logs in: {data_dirs[0]}/logs/broker.log"
+                f"Health check failed after {_HEALTH_TIMEOUT}s. "
+                f"Check logs: {log_file}"
             ),
         }
 
     return {
         "status": "running",
-        "endpoint": "127.0.0.1:1883",
-        "nodes": list(_BROKER_PORTS.keys()),
-        "ports": _BROKER_PORTS,
-        "data_dirs": data_dirs,
+        "endpoint": f"127.0.0.1:{_MQTT_PORT}",
+        "nodes": [_SINGLE_NODE],
+        "data_dirs": [data_dir],
     }
 
 
@@ -259,6 +355,7 @@ def _action_status() -> dict:
 # ---------------------------------------------------------------------------
 # Tool handler
 # ---------------------------------------------------------------------------
+
 
 def _cluster_handler(args: dict, **_) -> str:
     action = args.get("action", "")
