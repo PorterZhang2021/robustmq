@@ -13,6 +13,7 @@
 // limitations under the License.
 
 pub mod agent_core;
+pub mod agent_discover;
 pub mod common;
 pub mod mq9_core;
 pub mod mq9_delay;

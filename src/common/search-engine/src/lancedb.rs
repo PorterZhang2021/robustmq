@@ -15,6 +15,7 @@
 use arrow_array::RecordBatch;
 use arrow_schema::Schema;
 use common_base::error::common::CommonError;
+use common_config::broker::broker_config;
 use futures::TryStreamExt;
 use lance_index::scalar::FullTextSearchQuery;
 use lancedb::database::CreateTableMode;
@@ -36,8 +37,14 @@ fn err_from(e: impl std::fmt::Display) -> Box<CommonError> {
     err(e.to_string())
 }
 
-pub async fn init(path: &str) -> SearchResult<()> {
-    let conn = connect(path).execute().await.map_err(err_from)?;
+fn lancedb_path() -> String {
+    let conf = broker_config();
+    format!("{}/_lancedb", conf.data_path)
+}
+
+pub async fn init() -> SearchResult<()> {
+    let path = lancedb_path();
+    let conn = connect(&path).execute().await.map_err(err_from)?;
     DB.set(conn).map_err(|_| err("lancedb already initialized"))
 }
 
@@ -89,11 +96,15 @@ pub async fn vector_search(
     table: &Table,
     vector: Vec<f32>,
     limit: usize,
+    offset: usize,
     columns: Option<&[&str]>,
     filter: Option<&str>,
 ) -> SearchResult<Vec<RecordBatch>> {
     let mut q = table.vector_search(vector).map_err(err_from)?.limit(limit);
 
+    if offset > 0 {
+        q = q.offset(offset);
+    }
     if let Some(cols) = columns {
         q = q.select(Select::columns(cols));
     }
@@ -113,6 +124,7 @@ pub async fn full_text_search(
     table: &Table,
     query: &str,
     limit: usize,
+    offset: usize,
     columns: Option<&[&str]>,
 ) -> SearchResult<Vec<RecordBatch>> {
     let mut q = table
@@ -120,30 +132,43 @@ pub async fn full_text_search(
         .full_text_search(FullTextSearchQuery::new(query.to_string()))
         .limit(limit);
 
+    if offset > 0 {
+        q = q.offset(offset);
+    }
     if let Some(cols) = columns {
         q = q.select(Select::columns(cols));
     }
 
-    q.execute()
-        .await
-        .map_err(err_from)?
-        .try_collect::<Vec<_>>()
-        .await
-        .map_err(err_from)
+    match q.execute().await {
+        Ok(stream) => stream.try_collect::<Vec<_>>().await.map_err(err_from),
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("INVERTED index") || msg.contains("full text search") {
+                Ok(vec![])
+            } else {
+                Err(err_from(e))
+            }
+        }
+    }
 }
 
 pub async fn create_fts_index(table: &Table, columns: &[&str]) -> SearchResult<()> {
     table
         .create_index(columns, Index::FTS(Default::default()))
+        .replace(true)
         .execute()
         .await
         .map_err(err_from)
 }
 
 pub async fn create_vector_index(table: &Table, column: &str) -> SearchResult<()> {
-    use lancedb::index::vector::IvfPqIndexBuilder;
+    use lancedb::index::vector::IvfHnswSqIndexBuilder;
     table
-        .create_index(&[column], Index::IvfPq(IvfPqIndexBuilder::default()))
+        .create_index(
+            &[column],
+            Index::IvfHnswSq(IvfHnswSqIndexBuilder::default()),
+        )
+        .replace(true)
         .execute()
         .await
         .map_err(err_from)
@@ -154,7 +179,7 @@ mod tests {
     use super::*;
     use arrow_array::{FixedSizeListArray, Int64Array, StringArray};
     use arrow_schema::{DataType, Field};
-    use common_base::uuid::unique_id;
+    use common_config::{broker::init_broker_conf_by_config, config::BrokerConfig};
     use lance_arrow::FixedSizeListArrayExt;
 
     fn make_schema(dim: i32) -> Arc<Schema> {
@@ -184,8 +209,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_basic_operations() {
-        let path = format!("/tmp/{}", unique_id());
-        init(&path).await.unwrap();
+        init_broker_conf_by_config(BrokerConfig::default());
+        init().await.unwrap();
 
         let dim = 4i32;
         let schema = make_schema(dim);
@@ -197,6 +222,7 @@ mod tests {
             &table,
             vec![0.0f32; dim as usize],
             3,
+            0,
             Some(&["id", "text"]),
             None,
         )
@@ -205,7 +231,7 @@ mod tests {
         assert!(!results.is_empty());
 
         create_fts_index(&table, &["text"]).await.unwrap();
-        let fts = full_text_search(&table, "message queue", 3, Some(&["id", "text"]))
+        let fts = full_text_search(&table, "message queue", 3, 0, Some(&["id", "text"]))
             .await
             .unwrap();
         assert!(!fts.is_empty());

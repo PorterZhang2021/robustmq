@@ -16,10 +16,13 @@ use common_base::error::common::CommonError;
 use common_config::broker::broker_config;
 use grpc_clients::meta::mq9::call::{
     placement_create_mq9_agent, placement_delete_mq9_agent, placement_list_mq9_agent,
+    placement_search_mq9_agent,
 };
 use grpc_clients::pool::ClientPool;
 use metadata_struct::mq9::agent::MQ9Agent;
-use protocol::meta::meta_service_mq9::{CreateAgentRequest, DeleteAgentRequest, ListAgentRequest};
+use protocol::meta::meta_service_mq9::{
+    CreateAgentRequest, DeleteAgentRequest, ListAgentRequest, SearchAgentRequest,
+};
 use std::sync::Arc;
 use tonic::Streaming;
 
@@ -68,5 +71,63 @@ impl Mq9AgentStorage {
             agents.push(MQ9Agent::decode(&reply.agent)?);
         }
         Ok(agents)
+    }
+
+    pub async fn search_by_text(
+        &self,
+        tenant: &str,
+        text: &str,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<serde_json::Value>, CommonError> {
+        self.do_search(SearchAgentRequest {
+            tenant: tenant.to_string(),
+            text: text.to_string(),
+            semantic: String::new(),
+            limit,
+            offset,
+        })
+        .await
+    }
+
+    pub async fn search_by_semantic(
+        &self,
+        tenant: &str,
+        semantic: &str,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<serde_json::Value>, CommonError> {
+        self.do_search(SearchAgentRequest {
+            tenant: tenant.to_string(),
+            text: String::new(),
+            semantic: semantic.to_string(),
+            limit,
+            offset,
+        })
+        .await
+    }
+
+    async fn do_search(
+        &self,
+        request: SearchAgentRequest,
+    ) -> Result<Vec<serde_json::Value>, CommonError> {
+        let config = broker_config();
+        let reply =
+            placement_search_mq9_agent(&self.client_pool, &config.get_meta_service_addr(), request)
+                .await?;
+
+        let items = reply
+            .items
+            .into_iter()
+            .map(|item| {
+                serde_json::json!({
+                    "agent_id": item.agent_id,
+                    "name": item.name,
+                    "description": item.description,
+                    "agent_info": item.agent_info,
+                })
+            })
+            .collect();
+        Ok(items)
     }
 }

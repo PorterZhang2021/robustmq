@@ -199,14 +199,12 @@ impl DataRouteCluster {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use bytes::Bytes;
     use common_base::utils::file_utils::test_temp_dir;
-    use common_config::broker::default_broker_config;
     use metadata_struct::meta::node::BrokerNode;
     use rocksdb_engine::rocksdb::RocksDBEngine;
     use rocksdb_engine::storage::family::column_family_list;
+    use std::sync::Arc;
 
     use crate::core::cache::MetaCacheManager;
     use crate::raft::route::common::DataRouteCluster;
@@ -216,7 +214,6 @@ mod tests {
 
     #[tokio::test]
     async fn register_unregister_node() {
-        let config = default_broker_config();
         let node_id = 999;
         let node_ip = "127.0.0.1".to_string();
 
@@ -232,7 +229,7 @@ mod tests {
         let data = Bytes::copy_from_slice(&RegisterNodeRequest::encode_to_vec(&request));
         let rocksdb_engine = Arc::new(RocksDBEngine::new(
             &test_temp_dir(),
-            config.rocksdb.max_open_files,
+            100000,
             column_family_list(),
         ));
         let cluster_cache = Arc::new(MetaCacheManager::new(rocksdb_engine.clone()));

@@ -14,9 +14,12 @@
 
 use crate::client::LLMResult;
 use common_base::error::common::CommonError;
+use common_config::broker::broker_config;
 #[cfg(test)]
-use fastembed::{EmbeddingModel, InitOptions};
-use fastembed::{InitOptionsUserDefined, TextEmbedding, TokenizerFiles, UserDefinedEmbeddingModel};
+use fastembed::EmbeddingModel;
+use fastembed::{
+    InitOptions, InitOptionsUserDefined, TextEmbedding, TokenizerFiles, UserDefinedEmbeddingModel,
+};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::OnceCell;
@@ -27,19 +30,42 @@ fn err(msg: impl Into<String>) -> Box<CommonError> {
     Box::new(CommonError::CommonError(msg.into()))
 }
 
-/// Initialize the global fastembed model from a local directory.
-/// Must be called once at startup before any embed calls.
-/// The directory must contain: model.onnx, tokenizer.json, config.json,
-/// special_tokens_map.json, tokenizer_config.json
-pub fn init(model_dir: &str) -> LLMResult<()> {
-    let dir = PathBuf::from(model_dir);
+pub fn init() -> LLMResult<()> {
+    let conf = broker_config();
+    let embedding_model_path = conf
+        .llm_client
+        .embedding_model_path
+        .as_deref()
+        .unwrap_or(&conf.data_path)
+        .to_string();
 
+    let dir = PathBuf::from(embedding_model_path);
     if !dir.exists() {
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| err(format!("failed to create directory {:?}: {e}", dir)))?;
+    }
+
+    if !dir.join("model.onnx").exists() {
         tracing::info!(
-            "fastembed model directory '{}' does not exist, skipping initialization",
-            model_dir
+            "fastembed model files not found in {:?}, attempting to download default model",
+            dir
         );
-        return Ok(());
+        match TextEmbedding::try_new(
+            InitOptions::new(fastembed::EmbeddingModel::AllMiniLML6V2Q)
+                .with_show_download_progress(true),
+        ) {
+            Ok(m) => {
+                FASTEMBED_MODEL
+                    .set(Arc::new(m))
+                    .map_err(|_| err("fastembed model already initialized"))?;
+                tracing::info!("fastembed default model downloaded and initialized successfully");
+                return Ok(());
+            }
+            Err(e) => {
+                tracing::warn!("fastembed auto-download failed, skipping: {e}");
+                return Ok(());
+            }
+        }
     }
 
     let read = |filename: &str| -> LLMResult<Vec<u8>> {
@@ -60,18 +86,19 @@ pub fn init(model_dir: &str) -> LLMResult<()> {
     )
     .map_err(|e| {
         err(format!(
-            "failed to init fastembed model from {model_dir}: {e}"
+            "failed to init fastembed model from {:?}: {e}",
+            dir
         ))
     })?;
 
     FASTEMBED_MODEL
         .set(Arc::new(model))
-        .map_err(|_| err("fastembed model already initialized"))
+        .map_err(|_| err("fastembed model already initialized"))?;
+
+    tracing::info!("fastembed model initialized successfully from {:?}", dir);
+    Ok(())
 }
 
-/// Initialize the global fastembed model by downloading from HuggingFace.
-/// For testing only — requires network access.
-/// Uses AllMiniLML6V2Q (~7MB) by default if model is None.
 #[cfg(test)]
 pub fn init_for_test(model: Option<EmbeddingModel>) -> LLMResult<()> {
     let model = TextEmbedding::try_new(

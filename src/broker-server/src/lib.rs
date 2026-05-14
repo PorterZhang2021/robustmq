@@ -36,6 +36,7 @@ use delay_message::manager::DelayMessageManager;
 use delay_task::manager::DelayTaskManager;
 use grpc_clients::pool::ClientPool;
 use kafka_broker::broker::KafkaBrokerServerParams;
+use llm_engine::embedding::fastembed;
 use meta_service::MetaServiceServerParams;
 use mqtt_broker::broker::MqttBrokerServerParams;
 use nats_broker::broker::NatsBrokerServerParams;
@@ -46,8 +47,9 @@ use node_call::NodeCallManager;
 use rate_limit::global::GlobalRateLimiterManager;
 use rocksdb_engine::{
     rocksdb::RocksDBEngine,
-    storage::family::{column_family_list, storage_data_fold},
+    storage::family::{column_family_list, rocksdb_data_fold},
 };
+use search_engine::lancedb;
 use std::sync::Arc;
 use storage_adapter::driver::StorageDriverManager;
 use storage_adapter::topic::init_inner_topics;
@@ -169,8 +171,8 @@ impl BrokerServer {
     fn init_base(config: &BrokerConfig) -> (BaseComponents, Runtime, Runtime, Runtime) {
         let client_pool = Arc::new(ClientPool::new(config.runtime.channels_per_address));
         let rocksdb_engine_handler = Arc::new(RocksDBEngine::new(
-            &storage_data_fold(&config.rocksdb.data_path),
-            config.rocksdb.max_open_files,
+            &rocksdb_data_fold(&config.data_path),
+            100000,
             column_family_list(),
         ));
         let global_rate_limiter = Arc::new(
@@ -446,6 +448,15 @@ impl BrokerServer {
             }
             if let Err(e) = try_init_system_user(&client_pool).await {
                 error!("Failed to initialize system user: {}", e);
+                std::process::exit(1);
+            }
+
+            if let Err(e) = fastembed::init() {
+                error!("Failed to initialize fastembed: {}", e);
+                std::process::exit(1);
+            }
+            if let Err(e) = lancedb::init().await {
+                error!("Failed to initialize lancedb: {}", e);
                 std::process::exit(1);
             }
         });
