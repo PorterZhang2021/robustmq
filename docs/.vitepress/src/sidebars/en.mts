@@ -20,7 +20,7 @@ const items = [
                 ],
             },
             {
-                text: "Version planning",
+                text: "Version Planning",
                 collapsed: true,
                 items: [
                     { text: "2026 RoadMap", link: "/en/OverView/RoadMap-2026" },
@@ -60,6 +60,8 @@ const items = [
             { text: "Storage Adapter", link: "/en/Architect/StorageAdapter-Architecture" },
             { text: "Storage Engine", link: "/en/Architect/StorageEngine-Architecture" },
             { text: "Connector", link: "/en/Architect/Connector-Architecture" },
+            { text: "Multi-Protocol", link: "/en/Architect/MultiProtocol-Architecture" },
+            { text: "Pluggable Storage", link: "/en/Architect/PluggableStorage-Architecture" },
         ],
     },
     {
@@ -274,7 +276,7 @@ const items = [
     ],
   },
   {
-    text: "ContributionGuide",
+    text: "Contribution Guide",
     collapsed: true,
     items: [
       {
@@ -284,7 +286,7 @@ const items = [
       { text: "PR Example", link: "/en/ContributionGuide/Pull-Request-Example" },
       { text: "AI Skills Guide", link: "/en/ContributionGuide/AI-Skills" },
       {
-        text: "ContributingCode",
+        text: "Contributing Code",
         collapsed: true,
         items: [
           {
@@ -318,7 +320,7 @@ const items = [
         ],
       },
       {
-        text: "ContributingDoc",
+        text: "Contributing Doc",
         collapsed: true,
         items: [
           {
