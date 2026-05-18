@@ -37,7 +37,8 @@ Before starting any run:
 1. Call `cluster_manage(action=status)`.
    - If `status` is NOT `stopped`, call `cluster_manage(action=stop)` to clear
      any leftover state from a previous run.
-2. Verify `ROBUSTMQ_HOME` is set (the cluster tool fails fast if it is not —
+2. Verify `chaos-test/config.yml` has `cluster.binary` and `cluster.project_root`
+   filled in correctly (the cluster tool fails fast if binary is missing —
    surface that error immediately and stop).
 
 ---
