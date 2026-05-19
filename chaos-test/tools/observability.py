@@ -39,16 +39,49 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import yaml
+
 from tools.registry import registry
 
 logger = logging.getLogger(__name__)
 
-# HTTP metrics port = MQTT port + 1
-_NODES = {
-    "broker-1": {"mqtt_port": 1883, "http_port": 1884},
-    "broker-2": {"mqtt_port": 2883, "http_port": 2884},
-    "broker-3": {"mqtt_port": 3883, "http_port": 3884},
+_CONFIG_PATH = Path(__file__).parent.parent / "config.yml"
+
+# Fallback node map used when config.yml is absent or unreadable.
+_NODES_FALLBACK = {
+    "broker-1": {"mqtt_port": 1883, "http_port": 8080},
+    "broker-2": {"mqtt_port": 2883, "http_port": 8081},
+    "broker-3": {"mqtt_port": 3883, "http_port": 8082},
 }
+
+
+def _load_nodes() -> dict:
+    """Build node port map from config.yml; falls back to _NODES_FALLBACK on any error."""
+    try:
+        with open(_CONFIG_PATH) as f:
+            raw = yaml.safe_load(f) or {}
+        cluster = raw.get("cluster", {})
+        mode = cluster.get("mode", "single")
+        result: dict = {}
+        if mode == "single":
+            s = cluster.get("single", {})
+            result["broker-1"] = {
+                "mqtt_port": int(s.get("mqtt_port", 1883)),
+                "http_port": int(s.get("http_port", 8080)),
+            }
+        else:
+            for i, n in enumerate(cluster.get("multi", {}).get("nodes", []), 1):
+                result[f"broker-{i}"] = {
+                    "mqtt_port": int(n.get("mqtt_port", 1883)),
+                    "http_port": int(n.get("http_port", 8080 + i - 1)),
+                }
+        return result if result else _NODES_FALLBACK
+    except Exception as exc:
+        logger.warning(
+            "observability: failed to load node config, using defaults: %s", exc
+        )
+        return _NODES_FALLBACK
+
 
 # Prometheus metric names we care about
 _METRIC_KEYS = (
@@ -62,6 +95,7 @@ _METRIC_KEYS = (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _tail_lines(path: Path, n: int) -> list[str]:
     """Return the last n lines of a text file without reading the whole file."""
@@ -113,6 +147,7 @@ def _scrape_metrics(http_port: int) -> dict:
 # Actions
 # ---------------------------------------------------------------------------
 
+
 def _action_collect_logs(data_dirs: list, lines: int) -> dict:
     """
     data_dirs: list of paths returned by cluster start (same order as nodes).
@@ -128,7 +163,7 @@ def _action_collect_logs(data_dirs: list, lines: int) -> dict:
 
 def _action_collect_metrics() -> dict:
     metrics: dict = {}
-    for node, info in _NODES.items():
+    for node, info in _load_nodes().items():
         metrics[node] = _scrape_metrics(info["http_port"])
     return {"metrics": metrics}
 
@@ -146,6 +181,7 @@ def _action_snapshot(data_dirs: list, lines: int) -> dict:
 # ---------------------------------------------------------------------------
 # Tool handler
 # ---------------------------------------------------------------------------
+
 
 def _observability_handler(args: dict, **_) -> str:
     action = args.get("action", "")

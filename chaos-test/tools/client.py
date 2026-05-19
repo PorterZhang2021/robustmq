@@ -50,6 +50,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
 
+import yaml
+
 from tools.registry import registry
 
 logger = logging.getLogger(__name__)
@@ -57,24 +59,36 @@ logger = logging.getLogger(__name__)
 SUPPORTED_SDKS = ("python", "go", "rust", "java")
 _EXPECTED_KEYS = frozenset({"sent", "received", "lost", "p99_ms", "errors"})
 
-_SDK_CLIENTS_DIR = (
-    Path.home() / ".hermes" / "skills" / "robustmq-chaos-test" / "sdk_clients"
-)
+_SDK_CLIENTS_DIR = Path(__file__).parent.parent / "sdk_clients"
+_CONFIG_PATH = Path(__file__).parent.parent / "config.yml"
+
+
+def _load_mqtt_credentials() -> tuple[str, str]:
+    """Return (username, password) from config.yml mqtt section, or empty strings."""
+    try:
+        with open(_CONFIG_PATH) as f:
+            raw = yaml.safe_load(f) or {}
+        mqtt = raw.get("mqtt", {})
+        return mqtt.get("username", ""), mqtt.get("password", "")
+    except Exception:
+        return "", ""
+
 
 # Version-manager shell snippets: each must export the right toolchain
 # so the subsequent `bash <script>` inherits it.
 # We prepend these to the script invocation via `bash -c "..."`.
 _VERSION_SETUP: dict = {
     "python": 'eval "$(pyenv init -)" && pyenv shell {version} && ',
-    "go":     'source "$HOME/.gvm/scripts/gvm" && gvm use {version} && ',
-    "rust":   'source "$HOME/.cargo/env" && rustup override set {version} && ',
-    "java":   'source "$HOME/.sdkman/bin/sdkman-init.sh" && sdk use java {version} && ',
+    "go": 'source "$HOME/.gvm/scripts/gvm" && gvm use {version} && ',
+    "rust": 'source "$HOME/.cargo/env" && rustup override set {version} && ',
+    "java": 'source "$HOME/.sdkman/bin/sdkman-init.sh" && sdk use java {version} && ',
 }
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _parse_last_json_line(stdout: str) -> Optional[dict]:
     """Return dict if last non-empty stdout line is valid protocol JSON, else None."""
@@ -93,20 +107,29 @@ def _parse_last_json_line(stdout: str) -> Optional[dict]:
     return None
 
 
-def _run_one(sdk: str, version: str, scenario: str,
-             cluster_endpoint: str, timeout_seconds: int) -> dict:
+def _run_one(
+    sdk: str, version: str, scenario: str, cluster_endpoint: str, timeout_seconds: int
+) -> dict:
     script = _SDK_CLIENTS_DIR / sdk / f"{scenario}.sh"
     if not script.exists():
         return {
-            "sdk": sdk, "version": version, "scenario": scenario,
-            "status": "script_not_found", "passed": False,
+            "sdk": sdk,
+            "version": version,
+            "scenario": scenario,
+            "status": "script_not_found",
+            "passed": False,
             "error": f"script not found: {script}",
         }
 
     version_prefix = _VERSION_SETUP.get(sdk, "").format(version=version)
     cmd = f'{version_prefix}bash "{script}"'
 
+    username, password = _load_mqtt_credentials()
     env = {**os.environ, "CLUSTER_ENDPOINT": cluster_endpoint}
+    if username:
+        env["MQTT_USERNAME"] = username
+    if password:
+        env["MQTT_PASSWORD"] = password
 
     t0 = time.monotonic()
     try:
@@ -120,8 +143,11 @@ def _run_one(sdk: str, version: str, scenario: str,
         )
     except subprocess.TimeoutExpired:
         return {
-            "sdk": sdk, "version": version, "scenario": scenario,
-            "status": "timeout", "passed": False,
+            "sdk": sdk,
+            "version": version,
+            "scenario": scenario,
+            "status": "timeout",
+            "passed": False,
             "duration_seconds": round(time.monotonic() - t0, 1),
         }
 
@@ -130,8 +156,11 @@ def _run_one(sdk: str, version: str, scenario: str,
     protocol_data = _parse_last_json_line(result.stdout)
     if protocol_data is None:
         return {
-            "sdk": sdk, "version": version, "scenario": scenario,
-            "status": "script_format_error", "passed": False,
+            "sdk": sdk,
+            "version": version,
+            "scenario": scenario,
+            "status": "script_format_error",
+            "passed": False,
             "exit_code": result.returncode,
             "duration_seconds": duration,
             "error": (
@@ -150,7 +179,9 @@ def _run_one(sdk: str, version: str, scenario: str,
     passed = result.returncode == 0
 
     return {
-        "sdk": sdk, "version": version, "scenario": scenario,
+        "sdk": sdk,
+        "version": version,
+        "scenario": scenario,
         "exit_code": result.returncode,
         "passed": passed,
         "status": "passed" if passed else "failed",
@@ -164,8 +195,9 @@ def _run_one(sdk: str, version: str, scenario: str,
     }
 
 
-def _run_all(version: str, scenario: str,
-             cluster_endpoint: str, timeout_seconds: int) -> dict:
+def _run_all(
+    version: str, scenario: str, cluster_endpoint: str, timeout_seconds: int
+) -> dict:
     results: dict = {}
     with ThreadPoolExecutor(max_workers=len(SUPPORTED_SDKS)) as pool:
         futures = {
@@ -181,8 +213,10 @@ def _run_all(version: str, scenario: str,
             except Exception as exc:
                 logger.exception("client: unexpected error for sdk '%s'", sdk)
                 results[sdk] = {
-                    "sdk": sdk, "scenario": scenario,
-                    "status": "runner_error", "passed": False,
+                    "sdk": sdk,
+                    "scenario": scenario,
+                    "status": "runner_error",
+                    "passed": False,
                     "error": str(exc),
                 }
 
@@ -198,12 +232,11 @@ def _run_all(version: str, scenario: str,
 # Tool handler
 # ---------------------------------------------------------------------------
 
+
 def _client_handler(args: dict, **_) -> str:
     action = args.get("action", "")
     if action != "run":
-        return json.dumps(
-            {"error": f"unknown action: '{action}'. Valid: run"}
-        )
+        return json.dumps({"error": f"unknown action: '{action}'. Valid: run"})
 
     sdk: Optional[str] = args.get("sdk")
     version: str = args.get("version") or "default"
@@ -220,7 +253,9 @@ def _client_handler(args: dict, **_) -> str:
         if sdk:
             if sdk not in SUPPORTED_SDKS:
                 return json.dumps(
-                    {"error": f"unknown sdk: '{sdk}'. Valid: {', '.join(SUPPORTED_SDKS)}"}
+                    {
+                        "error": f"unknown sdk: '{sdk}'. Valid: {', '.join(SUPPORTED_SDKS)}"
+                    }
                 )
             result = _run_one(sdk, version, scenario, cluster_endpoint, timeout_seconds)
         else:

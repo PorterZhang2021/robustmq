@@ -258,7 +258,10 @@ def test_stop_returns_stopped_when_no_cluster_running():
     from tools.cluster import _BROKERS, _action_stop
 
     _BROKERS.clear()
-    result = _action_stop()
+    with patch("tools.cluster._kill_stray_brokers", return_value=0), patch(
+        "tools.cluster._load_config", return_value={"error": "no config"}
+    ):
+        result = _action_stop()
     assert result["status"] == "stopped"
 
 
@@ -278,12 +281,56 @@ def test_stop_kills_processes_and_removes_data_dirs(tmp_path):
         "data_dir": str(data_dir),
     }
 
-    result = _action_stop()
+    with patch("tools.cluster._kill_stray_brokers", return_value=0):
+        result = _action_stop()
 
     assert result["status"] == "stopped"
     assert not data_dir.exists()
     assert len(_BROKERS) == 0
     mock_proc.kill.assert_called_once()
+
+
+def test_stop_kills_stray_processes_when_brokers_dict_empty(tmp_path):
+    """After external SIGKILL the _BROKERS dict is empty; stop must still kill strays."""
+    from tools.cluster import _BROKERS, _action_stop
+
+    _BROKERS.clear()
+    with patch("tools.cluster._kill_stray_brokers", return_value=1) as mock_kill, patch(
+        "tools.cluster._load_config", return_value={"error": "no config"}
+    ):
+        result = _action_stop()
+
+    assert result["status"] == "stopped"
+    mock_kill.assert_called_once()
+
+
+def test_stop_cleans_config_data_dirs_when_brokers_dict_empty(tmp_path):
+    """When _BROKERS is empty, stop falls back to config-defined data dirs for cleanup."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+
+    cfg = {
+        "binary": "bin/broker-server",
+        "project_root": str(tmp_path),
+        "mode": "single",
+        "single": {
+            "config": str(tmp_path / "server.toml"),
+            "data_dir": "data",
+            "mqtt_port": 1883,
+        },
+    }
+
+    from tools.cluster import _BROKERS, _action_stop
+
+    _BROKERS.clear()
+    with patch("tools.cluster._kill_stray_brokers", return_value=0), patch(
+        "tools.cluster._load_config", return_value=cfg
+    ):
+        result = _action_stop()
+
+    assert result["status"] == "stopped"
+    assert str(data_dir) in result["cleaned_dirs"]
+    assert not data_dir.exists()
 
 
 # ---------------------------------------------------------------------------

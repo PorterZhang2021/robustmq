@@ -53,24 +53,23 @@ from tools.registry import registry
 
 logger = logging.getLogger(__name__)
 
-_NOT_IMPLEMENTED = frozenset({
-    "network-partition",
-    "disk-fill",
-    "cpu-stress",
-    "clock-skew",
-})
+_NOT_IMPLEMENTED = frozenset(
+    {
+        "network-partition",
+        "disk-fill",
+        "cpu-stress",
+        "clock-skew",
+    }
+)
 
-_CONFIG_PATH = (
-    Path.home() / ".hermes" / "skills" / "robustmq-chaos-test" / "config.yml"
-)
-_FAULT_DIR = (
-    Path.home() / ".hermes" / "skills" / "robustmq-chaos-test" / "faults"
-)
+_CONFIG_PATH = Path(__file__).parent.parent / "config.yml"
+_FAULT_DIR = Path(__file__).parent.parent / "faults"
 
 
 # ---------------------------------------------------------------------------
 # Config loader
 # ---------------------------------------------------------------------------
+
 
 def _load_chaosd_endpoint() -> Optional[str]:
     """Read chaosd.endpoint from config.yml. Returns None on any error."""
@@ -90,7 +89,12 @@ def _load_chaosd_endpoint() -> Optional[str]:
                 if stripped.startswith("endpoint:"):
                     value = stripped.split(":", 1)[1].strip().strip('"').strip("'")
                     return value if value else None
-                if stripped and not stripped.startswith("#") and ":" in stripped and not line.startswith(" "):
+                if (
+                    stripped
+                    and not stripped.startswith("#")
+                    and ":" in stripped
+                    and not line.startswith(" ")
+                ):
                     in_chaosd = False
     except OSError as exc:
         logger.error("chaos: failed to read config.yml: %s", exc)
@@ -100,6 +104,7 @@ def _load_chaosd_endpoint() -> Optional[str]:
 # ---------------------------------------------------------------------------
 # Fault record helpers
 # ---------------------------------------------------------------------------
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -127,11 +132,13 @@ def _load_fault(fault_id: str) -> Optional[dict]:
 # Chaosd HTTP client
 # ---------------------------------------------------------------------------
 
+
 def _chaosd_post(endpoint: str, path: str, payload: dict) -> dict:
     url = endpoint.rstrip("/") + path
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
-        url, data=data,
+        url,
+        data=data,
         headers={"Content-Type": "application/json"},
         method="POST",
     )
@@ -166,7 +173,10 @@ def _chaosd_delete(endpoint: str, path: str) -> dict:
 # Fault implementations
 # ---------------------------------------------------------------------------
 
-def _inject_broker_kill(endpoint: str, target: str, params: dict, fault_id: str) -> dict:
+
+def _inject_broker_kill(
+    endpoint: str, target: str, params: dict, fault_id: str
+) -> dict:
     """
     Chaosd process attack — send SIGKILL to a process matching target.
     target: process name or command pattern, e.g. "robustmq-server"
@@ -201,7 +211,9 @@ def _inject_broker_kill(endpoint: str, target: str, params: dict, fault_id: str)
     }
 
 
-def _inject_network_delay(endpoint: str, target: str, params: dict, fault_id: str) -> dict:
+def _inject_network_delay(
+    endpoint: str, target: str, params: dict, fault_id: str
+) -> dict:
     """
     Chaosd network attack — add latency to traffic from/to a device.
     target:             network interface, e.g. "eth0"
@@ -230,7 +242,11 @@ def _inject_network_delay(endpoint: str, target: str, params: dict, fault_id: st
         "fault_type": "network-delay",
         "target": target,
         "chaosd_uid": chaosd_uid,
-        "params": {"delay_ms": delay_ms, "jitter_ms": jitter_ms, "correlation": correlation},
+        "params": {
+            "delay_ms": delay_ms,
+            "jitter_ms": jitter_ms,
+            "correlation": correlation,
+        },
         "injected_at": _now_iso(),
         "status": "active",
         "endpoint": endpoint,
@@ -251,10 +267,14 @@ def _inject_network_delay(endpoint: str, target: str, params: dict, fault_id: st
 # Actions
 # ---------------------------------------------------------------------------
 
-def _action_inject(fault_type: str, target: str,
-                   duration_seconds: int, params: dict) -> dict:
+
+def _action_inject(
+    fault_type: str, target: str, duration_seconds: int, params: dict
+) -> dict:
     if fault_type in _NOT_IMPLEMENTED:
-        return {"error": f"not_implemented: '{fault_type}' will be added in a future version"}
+        return {
+            "error": f"not_implemented: '{fault_type}' will be added in a future version"
+        }
 
     endpoint = _load_chaosd_endpoint()
     if not endpoint:
@@ -262,7 +282,7 @@ def _action_inject(fault_type: str, target: str,
             "error": (
                 "Chaosd endpoint not configured. "
                 "Add chaosd.endpoint to "
-                "~/.hermes/skills/robustmq-chaos-test/config.yml"
+                f"{_CONFIG_PATH}"
             )
         }
 
@@ -312,6 +332,7 @@ def _action_recover(fault_id: str) -> dict:
 # ---------------------------------------------------------------------------
 # Tool handler
 # ---------------------------------------------------------------------------
+
 
 def _chaos_handler(args: dict, **_) -> str:
     action = args.get("action", "")

@@ -18,15 +18,21 @@ set -euo pipefail
 ENDPOINT="${CLUSTER_ENDPOINT:-127.0.0.1:1883}"
 HOST="${ENDPOINT%%:*}"
 PORT="${ENDPOINT##*:}"
+MQTT_USERNAME="${MQTT_USERNAME:-admin}"
+MQTT_PASSWORD="${MQTT_PASSWORD:-robustmq}"
 MSG_COUNT=100
 TIMEOUT=30
 
 python3 - <<EOF
-import json, time, threading, paho.mqtt.client as mqtt
+import json, time, threading, uuid, paho.mqtt.client as mqtt
 
 host, port = "$HOST", int("$PORT")
 total = $MSG_COUNT
 timeout = $TIMEOUT
+
+# Unique topic and client_id per run to avoid cross-run state conflicts in broker
+run_id = uuid.uuid4().hex[:8]
+topic = f"test/pubsub/{run_id}"
 
 sent = 0
 received = 0
@@ -40,13 +46,13 @@ def on_connect(client, userdata, flags, rc, properties=None):
         errors.append(f"connect failed rc={rc}")
         done.set()
         return
-    client.subscribe("test/pubsub", qos=1)
+    client.subscribe(topic, qos=1)
 
 def on_subscribe(client, userdata, mid, granted_qos, properties=None):
     global sent
     t0 = time.monotonic()
     for i in range(total):
-        client.publish("test/pubsub", payload=f"msg-{i}", qos=1)
+        client.publish(topic, payload=f"msg-{i}", qos=1)
         sent += 1
 
 def on_message(client, userdata, msg):
@@ -61,6 +67,7 @@ client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="chaos-test-pub
 client.on_connect = on_connect
 client.on_subscribe = on_subscribe
 client.on_message = on_message
+client.username_pw_set("$MQTT_USERNAME", "$MQTT_PASSWORD")
 
 try:
     client.connect(host, port, keepalive=60)

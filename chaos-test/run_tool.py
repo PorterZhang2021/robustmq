@@ -34,6 +34,10 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 # Import all tool modules so they register themselves
 from tools import cluster  # noqa: F401
+from tools import chaos  # noqa: F401
+from tools import client  # noqa: F401
+from tools import observability  # noqa: F401
+from tools import report  # noqa: F401
 from tools.registry import registry
 
 

@@ -51,21 +51,15 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
+import yaml
+
 from tools.registry import registry
 
 logger = logging.getLogger(__name__)
 
-_CONFIG_PATH = (
-    Path.home() / ".hermes" / "skills" / "robustmq-chaos-test" / "config.yml"
-)
-_TEMPLATE_PATH = (
-    Path.home() / ".hermes" / "skills" / "robustmq-chaos-test"
-    / "templates" / "report.md.j2"
-)
-_CLONE_BASE = (
-    Path.home() / ".hermes" / "skills" / "robustmq-chaos-test" / "report-clones"
-)
-_DEPLOY_KEY = Path.home() / ".ssh" / "test-reports-deploy"
+_CONFIG_PATH = Path(__file__).parent.parent / "config.yml"
+_TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "report.md.j2"
+_CLONE_BASE = Path(__file__).parent.parent / "report-clones"
 
 CORE_SCENARIOS = frozenset({"broker-kill-single", "leader-transfer"})
 
@@ -74,31 +68,23 @@ CORE_SCENARIOS = frozenset({"broker-kill-single", "leader-transfer"})
 # Config loader
 # ---------------------------------------------------------------------------
 
+
 def _load_reports_config() -> dict:
-    """Read reports.repo_url and reports.branch from config.yml."""
-    result = {"repo_url": None, "branch": "main"}
+    """Read github section from config.yml: repo_url, branch, deploy_key_path."""
+    result = {"repo_url": None, "branch": "main", "deploy_key_path": None}
     if not _CONFIG_PATH.exists():
         return result
     try:
-        text = _CONFIG_PATH.read_text(encoding="utf-8")
-        in_reports = False
-        for line in text.splitlines():
-            stripped = line.strip()
-            if stripped.startswith("reports:"):
-                in_reports = True
-                continue
-            if in_reports:
-                if stripped.startswith("repo_url:"):
-                    val = stripped.split(":", 1)[1].strip().strip('"').strip("'")
-                    if val:
-                        result["repo_url"] = val
-                elif stripped.startswith("branch:"):
-                    val = stripped.split(":", 1)[1].strip().strip('"').strip("'")
-                    if val:
-                        result["branch"] = val
-                elif stripped and not stripped.startswith("#") and ":" in stripped and not line.startswith(" "):
-                    in_reports = False
-    except OSError as exc:
+        with open(_CONFIG_PATH) as f:
+            raw = yaml.safe_load(f) or {}
+        gh = raw.get("github", {})
+        if gh.get("reports_repo"):
+            result["repo_url"] = gh["reports_repo"]
+        if gh.get("branch"):
+            result["branch"] = gh["branch"]
+        if gh.get("deploy_key_path"):
+            result["deploy_key_path"] = str(Path(gh["deploy_key_path"]).expanduser())
+    except Exception as exc:
         logger.error("report: failed to read config.yml: %s", exc)
     return result
 
@@ -106,6 +92,7 @@ def _load_reports_config() -> dict:
 # ---------------------------------------------------------------------------
 # Pass/fail logic
 # ---------------------------------------------------------------------------
+
 
 def _compute_run_passed(scenarios: list) -> bool:
     """
@@ -141,6 +128,7 @@ def _compute_run_passed(scenarios: list) -> bool:
 # Rendering
 # ---------------------------------------------------------------------------
 
+
 def _render_markdown(run_data: dict, run_passed: bool) -> str:
     """Render the Markdown report using Jinja2 template."""
     try:
@@ -160,8 +148,9 @@ def _render_markdown(run_data: dict, run_passed: bool) -> str:
         autoescape=False,
     )
     template = env.get_template(template_name)
-    return template.render(run_data=run_data, run_passed=run_passed,
-                           core_scenarios=sorted(CORE_SCENARIOS))
+    return template.render(
+        run_data=run_data, run_passed=run_passed, core_scenarios=sorted(CORE_SCENARIOS)
+    )
 
 
 def _render_markdown_fallback(run_data: dict, run_passed: bool) -> str:
@@ -206,14 +195,17 @@ def _render_markdown_fallback(run_data: dict, run_passed: bool) -> str:
 # Git push
 # ---------------------------------------------------------------------------
 
-def _git_ssh_env() -> dict:
+
+def _git_ssh_env(deploy_key_path: str) -> dict:
     return {
         **os.environ,
-        "GIT_SSH_COMMAND": f"ssh -i {_DEPLOY_KEY} -o StrictHostKeyChecking=no -o BatchMode=yes",
+        "GIT_SSH_COMMAND": f"ssh -i {deploy_key_path} -o StrictHostKeyChecking=no -o BatchMode=yes",
     }
 
 
-def _run_git(args: list, cwd: str, env: dict, timeout: int = 60) -> tuple[int, str, str]:
+def _run_git(
+    args: list, cwd: str, env: dict, timeout: int = 60
+) -> tuple[int, str, str]:
     result = subprocess.run(
         ["git"] + args,
         cwd=cwd,
@@ -225,21 +217,28 @@ def _run_git(args: list, cwd: str, env: dict, timeout: int = 60) -> tuple[int, s
     return result.returncode, result.stdout, result.stderr
 
 
-def _push_to_github(repo_url: str, branch: str,
-                    json_path: Path, md_path: Path,
-                    run_id: str) -> dict:
+def _push_to_github(
+    repo_url: str,
+    branch: str,
+    json_path: Path,
+    md_path: Path,
+    run_id: str,
+    deploy_key_path: str,
+) -> dict:
     """
     Clone the reports repo into a temp dir, add both report files,
     commit, and push. Returns {"github_url": "...", "commit": "..."} or {"error": "..."}.
     """
-    env = _git_ssh_env()
+    env = _git_ssh_env(deploy_key_path)
     clone_dir = tempfile.mkdtemp(prefix="rmq-report-push-", dir=str(_CLONE_BASE))
 
     try:
         # Shallow clone
         rc, _, err = _run_git(
             ["clone", "--depth=1", "--branch", branch, repo_url, clone_dir],
-            cwd="/tmp", env=env, timeout=120,
+            cwd="/tmp",
+            env=env,
+            timeout=120,
         )
         if rc != 0:
             return {"error": f"git clone failed: {err[:300]}"}
@@ -254,16 +253,23 @@ def _push_to_github(repo_url: str, branch: str,
         # git add
         rc, _, err = _run_git(
             ["add", str(dest_dir / json_path.name), str(dest_dir / md_path.name)],
-            cwd=clone_dir, env=env,
+            cwd=clone_dir,
+            env=env,
         )
         if rc != 0:
             return {"error": f"git add failed: {err[:300]}"}
 
         # git commit
         rc, _, err = _run_git(
-            ["commit", "-m", f"chaos: add report for run {run_id}",
-             "--author", "robustmq-chaos-bot <chaos@robustmq.bot>"],
-            cwd=clone_dir, env=env,
+            [
+                "commit",
+                "-m",
+                f"chaos: add report for run {run_id}",
+                "--author",
+                "robustmq-chaos-bot <chaos@robustmq.bot>",
+            ],
+            cwd=clone_dir,
+            env=env,
         )
         if rc != 0:
             return {"error": f"git commit failed: {err[:300]}"}
@@ -275,7 +281,9 @@ def _push_to_github(repo_url: str, branch: str,
         # git push
         rc, _, err = _run_git(
             ["push", "origin", branch],
-            cwd=clone_dir, env=env, timeout=120,
+            cwd=clone_dir,
+            env=env,
+            timeout=120,
         )
         if rc != 0:
             return {"error": f"git push failed: {err[:300]}"}
@@ -311,6 +319,7 @@ def _ssh_to_https(ssh_url: str) -> str:
 # Cleanup
 # ---------------------------------------------------------------------------
 
+
 def _cleanup_old_clones(max_age_days: int = 30) -> None:
     if not _CLONE_BASE.exists():
         return
@@ -326,6 +335,7 @@ def _cleanup_old_clones(max_age_days: int = 30) -> None:
 # ---------------------------------------------------------------------------
 # Main action
 # ---------------------------------------------------------------------------
+
 
 def _action_generate_and_push(run_data: dict) -> dict:
     run_id = run_data.get("run_id") or f"run-{int(time.time())}"
@@ -368,21 +378,24 @@ def _action_generate_and_push(run_data: dict) -> dict:
 
         # Push if repo configured and deploy key present
         if not repo_url:
-            result["push_skipped"] = (
-                "reports.repo_url not set in config.yml — reports generated locally only"
-            )
+            result[
+                "push_skipped"
+            ] = "github.reports_repo not set in config.yml — reports generated locally only"
             return result
 
-        if not _DEPLOY_KEY.exists():
-            result["push_skipped"] = (
-                f"Deploy key not found at {_DEPLOY_KEY} — reports generated locally only"
-            )
+        deploy_key_path = cfg.get("deploy_key_path")
+        if not deploy_key_path or not Path(deploy_key_path).exists():
+            result[
+                "push_skipped"
+            ] = f"Deploy key not found at {deploy_key_path!r} — reports generated locally only"
             return result
 
         _CLONE_BASE.mkdir(parents=True, exist_ok=True)
         _cleanup_old_clones()
 
-        push_result = _push_to_github(repo_url, branch, json_path, md_path, run_id)
+        push_result = _push_to_github(
+            repo_url, branch, json_path, md_path, run_id, deploy_key_path
+        )
         if "error" in push_result:
             result["push_error"] = push_result["error"]
         else:
@@ -401,6 +414,7 @@ def _action_generate_and_push(run_data: dict) -> dict:
 # ---------------------------------------------------------------------------
 # Tool handler
 # ---------------------------------------------------------------------------
+
 
 def _report_handler(args: dict, **_) -> str:
     action = args.get("action", "")

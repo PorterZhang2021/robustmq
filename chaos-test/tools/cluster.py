@@ -122,9 +122,26 @@ def _node_list(cfg: dict, root: Path) -> list:
 
 
 def _health_check(mqtt_port: int) -> bool:
+    """Verify MQTT readiness by sending a raw CONNECT and waiting for any CONNACK.
+    Any CONNACK (including rc=5 not-authorized) means the MQTT service is live.
+    A plain TCP check can succeed before the MQTT handler is initialized."""
     try:
-        with socket.create_connection(("127.0.0.1", mqtt_port), timeout=2):
-            return True
+        # MQTT v3.1.1 CONNECT: clean_session, client_id="rmq-probe", no auth
+        # Fixed header + remaining(21) + protocol name + level + flags + keepalive + client_id
+        packet = (
+            b"\x10\x15"  # CONNECT, remaining=21
+            b"\x00\x04MQTT"  # protocol name
+            b"\x04"  # protocol level 3.1.1
+            b"\x02"  # connect flags: clean session
+            b"\x00\x0a"  # keep alive 10s
+            b"\x00\x09rmq-probe"  # client ID length + value
+        )
+        with socket.create_connection(("127.0.0.1", mqtt_port), timeout=2) as sock:
+            sock.sendall(packet)
+            data = sock.recv(4)
+            return (
+                len(data) >= 2 and data[0] == 0x20
+            )  # any CONNACK means service is ready
     except OSError:
         return False
 
@@ -234,11 +251,47 @@ def _action_start() -> dict:
     }
 
 
-def _action_stop() -> dict:
-    if not _BROKERS:
-        return {"status": "stopped", "note": "No running cluster found."}
+def _kill_stray_brokers(binary: str) -> int:
+    """Kill any broker-server processes not tracked in _BROKERS (e.g. after external SIGKILL).
+    Returns the number of stray processes killed."""
+    killed = 0
+    try:
+        result = subprocess.run(["pgrep", "-f", binary], capture_output=True, text=True)
+        for pid_str in result.stdout.splitlines():
+            try:
+                pid = int(pid_str.strip())
+                subprocess.run(["kill", "-9", str(pid)], check=False)
+                killed += 1
+            except (ValueError, OSError):
+                pass
+        if killed:
+            time.sleep(1)  # wait for OS to reclaim ports
+    except OSError:
+        pass
+    return killed
 
+
+def _action_stop() -> dict:
+    cfg = _load_config()
+    binary_name = (
+        Path(cfg.get("binary", "broker-server")).name
+        if "error" not in cfg
+        else "broker-server"
+    )
+
+    # Collect tracked data dirs; fall back to config-defined dirs so stop works
+    # even when called in a fresh process (after external SIGKILL, for example).
     data_dirs = [info["data_dir"] for info in _BROKERS.values()]
+    if not data_dirs and "error" not in cfg:
+        root = _resolve_project_root(cfg.get("project_root", ""))
+        if root:
+            try:
+                for node in _node_list(cfg, root):
+                    d = str(node["data_dir"])
+                    if Path(d).exists():
+                        data_dirs.append(d)
+            except Exception:
+                pass
 
     for name, info in list(_BROKERS.items()):
         proc = info.get("process")
@@ -249,6 +302,10 @@ def _action_stop() -> dict:
             except Exception as exc:
                 logger.warning("cluster: failed to kill %s: %s", name, exc)
     _BROKERS.clear()
+
+    stray = _kill_stray_brokers(binary_name)
+    if stray:
+        logger.info("cluster: killed %d stray broker process(es)", stray)
 
     for d in data_dirs:
         try:
