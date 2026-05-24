@@ -121,7 +121,11 @@ def _run_one(
             "error": f"script not found: {script}",
         }
 
-    version_prefix = _VERSION_SETUP.get(sdk, "").format(version=version)
+    version_prefix = (
+        _VERSION_SETUP.get(sdk, "").format(version=version)
+        if version and version != "default"
+        else ""
+    )
     cmd = f'{version_prefix}bash "{script}"'
 
     username, password = _load_mqtt_credentials()

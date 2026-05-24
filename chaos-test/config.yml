@@ -14,7 +14,7 @@
 
 cluster:
   binary: "bin/broker-server"   # relative to project_root, or absolute path
-  project_root: "/Users/porterzhang/other/code/rustRoverProject/robustmq"
+  project_root: "/root/test-agent/robustmq"
   mode: single                  # single | multi
   single:
     config: "config/server.toml"
@@ -30,11 +30,11 @@ cluster:
       - config: "config/cluster/server-2.toml"
         data_dir: "data/broker-2"
         mqtt_port: 2883
-        http_port: 8081
+        http_port: 8082
       - config: "config/cluster/server-3.toml"
         data_dir: "data/broker-3"
         mqtt_port: 3883
-        http_port: 8082
+        http_port: 8083
 
 mqtt:
   username: "admin"             # must match server.toml [mqtt_runtime] default_user
@@ -42,6 +42,10 @@ mqtt:
 
 chaosd:
   endpoint: "http://127.0.0.1:31767"
+
+observability:
+  log_pattern: "server.*.log"   # log filename pattern in data_dir/logs/
+  metrics_path: "/metrics"       # HTTP metrics endpoint path
 
 sdk_matrix:
   p0:
