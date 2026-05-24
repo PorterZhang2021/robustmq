@@ -31,20 +31,47 @@ VERSION=$(git -C "$PROJECT_ROOT" describe --tags --always --dirty 2>/dev/null ||
 TIMESTAMP=$(date +%Y%m%d%H%M%S)
 ARCHIVE="$OUTPUT_DIR/robustmq-${VERSION}-${TIMESTAMP}.tar.gz"
 
-git -C "$PROJECT_ROOT" ls-files -- src/ Cargo.toml Cargo.lock config/ scripts/ \
-    | tar czf "$ARCHIVE" -C "$PROJECT_ROOT" -T -
-
-echo "Packaged: $ARCHIVE ($(du -sh "$ARCHIVE" | cut -f1))"
-
-echo "Uploading to ${REMOTE_HOST}:${REMOTE_DIR} ..."
-ARCHIVE_NAME="$(basename "$ARCHIVE")"
-scp "$ARCHIVE" "${REMOTE_HOST}:${REMOTE_DIR}"
-echo "Upload complete: ${REMOTE_HOST}:${REMOTE_DIR}/${ARCHIVE_NAME}"
-rm "$ARCHIVE"
-echo "Local archive deleted."
-
 LOCAL_BRANCH=$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD)
+
+# Only pack files that changed (added/modified) relative to origin/<branch>,
+# plus any untracked files. This avoids shipping the entire repo on every run.
+CHANGED_FILES=$(git -C "$PROJECT_ROOT" diff --name-only --diff-filter=ACM "origin/${LOCAL_BRANCH}" 2>/dev/null || true)
+UNTRACKED_FILES=$(git -C "$PROJECT_ROOT" ls-files --others --exclude-standard -- src/ Cargo.toml Cargo.lock config/ scripts/ docs/ 2>/dev/null || true)
+DELETED_FILES=$(git -C "$PROJECT_ROOT" diff --name-only --diff-filter=D "origin/${LOCAL_BRANCH}" 2>/dev/null || true)
+
+# Combine changed + untracked, exclude .tar.gz files
+ALL_FILES=$(printf '%s\n%s' "$CHANGED_FILES" "$UNTRACKED_FILES" | grep -v '\.tar\.gz$' | grep -v '^$' | sort -u)
+
+if [ -z "$ALL_FILES" ]; then
+  echo "No changed files to package."
+  SKIP_ARCHIVE=1
+else
+  SKIP_ARCHIVE=0
+  printf '%s\0' $ALL_FILES \
+    | COPYFILE_DISABLE=1 tar czf "$ARCHIVE" -C "$PROJECT_ROOT" --null -T -
+  echo "Packaged: $ARCHIVE ($(du -sh "$ARCHIVE" | cut -f1)) — $(echo "$ALL_FILES" | wc -l | tr -d ' ') files"
+fi
+
 echo "Local branch: ${LOCAL_BRANCH}"
+
+ARCHIVE_NAME="$(basename "$ARCHIVE")"
+if [ "${SKIP_ARCHIVE}" -eq 0 ]; then
+  echo "Uploading to ${REMOTE_HOST}:${REMOTE_DIR} ..."
+  scp "$ARCHIVE" "${REMOTE_HOST}:${REMOTE_DIR}"
+  echo "Upload complete: ${REMOTE_HOST}:${REMOTE_DIR}/${ARCHIVE_NAME}"
+  rm "$ARCHIVE"
+  echo "Local archive deleted."
+fi
+
+# Build a remote delete command for each locally-deleted file.
+REMOTE_DELETE_CMDS=""
+if [ -n "$DELETED_FILES" ]; then
+  echo "Files deleted locally (will remove on remote):"
+  while IFS= read -r f; do
+    echo "  - $f"
+    REMOTE_DELETE_CMDS="${REMOTE_DELETE_CMDS}  rm -f \"${REMOTE_DIR}/${f}\" && echo \"Deleted: ${f}\" || true"$'\n'
+  done <<< "$DELETED_FILES"
+fi
 
 echo "Syncing remote branch ..."
 ssh "${REMOTE_HOST}" "
@@ -58,10 +85,25 @@ ssh "${REMOTE_HOST}" "
     git checkout ${LOCAL_BRANCH} || git checkout -b ${LOCAL_BRANCH} origin/${LOCAL_BRANCH}
   fi
   git pull origin ${LOCAL_BRANCH}
-  tar xzf ${ARCHIVE_NAME} 2>/dev/null && rm ${ARCHIVE_NAME}
+  if [ -f "${ARCHIVE_NAME}" ]; then
+    tar xzf ${ARCHIVE_NAME} --warning=no-unknown-keyword && rm ${ARCHIVE_NAME}
+  fi
+  # Remove any stale .tar.gz files from the repo root
+  find ${REMOTE_DIR} -maxdepth 1 -name '*.tar.gz' -delete
+${REMOTE_DELETE_CMDS}
   git add -A
   git diff --cached --quiet || git commit -m 'dev'
-  git push origin ${LOCAL_BRANCH}
+  PUSH_RETRY=0
+  until git push origin ${LOCAL_BRANCH}; do
+    PUSH_RETRY=\$((PUSH_RETRY + 1))
+    echo \"Push failed, retrying (\${PUSH_RETRY})...\"
+    sleep 3
+  done
+  echo \"Push succeeded after \${PUSH_RETRY} retries.\"
   echo \"Done.\"
 "
 echo "Remote extraction complete."
+
+# Clean up any leftover .tar.gz files in the local project root
+find "$PROJECT_ROOT" -maxdepth 1 -name '*.tar.gz' -delete
+echo "Local .tar.gz files cleaned up."
