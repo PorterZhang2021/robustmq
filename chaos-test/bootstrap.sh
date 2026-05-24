@@ -253,27 +253,29 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Step 6 — Register skill with Claude Code
+# Step 6 — Register skill with hermes (~/.claude/skills/)
 # ---------------------------------------------------------------------------
-section "Step 6 — Register chaos-test skill with Claude Code"
+section "Step 6 — Register chaos-test skill with hermes"
 
-SKILLS_DIR="$PROJECT_ROOT/.claude/skills/robustmq-chaos-test"
+# Skills go into hermes's global user directory, not the project .claude/
+HERMES_DIR="$HOME/.claude"
+SKILLS_DIR="$HERMES_DIR/skills/robustmq-chaos-test"
 mkdir -p "$SKILLS_DIR"
 cp "$PROJECT_ROOT/chaos-test/SKILL.md" "$SKILLS_DIR/SKILL.md"
 info "Copied SKILL.md → $SKILLS_DIR/SKILL.md"
 
-# Add run_tool.py permission to .claude/settings.json
-SETTINGS="$PROJECT_ROOT/.claude/settings.json"
+# Add run_tool.py permission to ~/.claude/settings.json (global hermes settings)
+SETTINGS="$HERMES_DIR/settings.json"
 RUN_TOOL_PERM="Bash(python*chaos-test/run_tool.py*)"
 
 if [[ ! -f "$SETTINGS" ]]; then
-    warn "settings.json not found at $SETTINGS — creating minimal one"
-    mkdir -p "$PROJECT_ROOT/.claude"
+    warn "~/.claude/settings.json not found — creating minimal one"
+    mkdir -p "$HERMES_DIR"
     echo '{"permissions":{"allow":[]}}' > "$SETTINGS"
 fi
 
 if grep -q "run_tool.py" "$SETTINGS"; then
-    info "run_tool.py permission already present in settings.json"
+    info "run_tool.py permission already present in ~/.claude/settings.json"
 else
     python3 - "$SETTINGS" "$RUN_TOOL_PERM" <<'EOF'
 import json, sys
@@ -287,7 +289,7 @@ with open(path, "w") as f:
     json.dump(data, f, indent=2)
     f.write("\n")
 EOF
-    info "Added run_tool.py permission to settings.json"
+    info "Added run_tool.py permission to ~/.claude/settings.json"
 fi
 
 # ---------------------------------------------------------------------------
