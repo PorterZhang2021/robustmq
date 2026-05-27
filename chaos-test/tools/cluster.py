@@ -15,97 +15,284 @@
 """
 cluster.py — RobustMQ test cluster lifecycle tool.
 
-Spawns 3 broker processes directly on the local host (no Docker).
-Each broker gets its own port and a tempdir for data.
+Reads cluster configuration from chaos-test/config.yml.
+Supports single-node and multi-node modes.
+Uses existing TOML config files from the RobustMQ project directly —
+no TOML generation. Data dirs are created on start and removed on stop.
 
-Ports:
-  broker-1: 1883
-  broker-2: 2883
-  broker-3: 3883
-
-State is kept in a module-level dict so start/stop/status share it
-within the same Hermes session. For cross-session persistence the
-caller (Skill) should use chaos_state.
-
-Required env var:
-  ROBUSTMQ_HOME  — directory that contains the RobustMQ binary.
-                   Fail-fast if unset; no default.
+Fill in config.yml:
+  cluster.binary       — path to broker-server binary (relative to project_root or absolute)
+  cluster.project_root — path to robustmq project root (leave empty to auto-detect)
+  cluster.mode         — "single" or "multi"
 """
 
 import json
 import logging
-import os
 import shutil
+import socket
 import subprocess
-import tempfile
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Optional
+
+import yaml
 
 from tools.registry import registry
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Module-level state (lives for the lifetime of the Hermes process)
-# ---------------------------------------------------------------------------
+_CONFIG_PATH = Path(__file__).parent.parent / "config.yml"
 
 _BROKERS: dict = {}
-# Shape:
-# {
-#   "broker-1": {
-#     "process": subprocess.Popen,
-#     "port": 1883,
-#     "data_dir": "/tmp/rmq-abc123",
-#     "node_name": "broker-1",
-#   },
-#   ...
-# }
 
-_BROKER_PORTS = {
-    "broker-1": 1883,
-    "broker-2": 2883,
-    "broker-3": 3883,
-}
-
-_HEALTH_TIMEOUT = 5   # seconds to wait before health check
-_HEALTH_URL_TEMPLATE = "http://127.0.0.1:{port}/health"
+_HEALTH_TIMEOUT = 30
+_HEALTH_INTERVAL = 2
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Config
 # ---------------------------------------------------------------------------
 
-def _robustmq_binary() -> Optional[str]:
-    home = os.environ.get("ROBUSTMQ_HOME", "").strip()
-    if not home:
-        return None
-    # Expect the binary to be at $ROBUSTMQ_HOME/bin/robustmq-server
-    # or directly at $ROBUSTMQ_HOME/robustmq-server.
-    candidates = [
-        Path(home) / "bin" / "robustmq-server",
-        Path(home) / "robustmq-server",
-    ]
-    for c in candidates:
-        if c.is_file():
-            return str(c)
-    # Return the first candidate path so the error message is actionable.
-    return str(candidates[0])
 
-
-def _health_check(port: int) -> bool:
-    url = _HEALTH_URL_TEMPLATE.format(port=port)
+def _load_config(path=_CONFIG_PATH) -> dict:
     try:
-        with urllib.request.urlopen(url, timeout=3) as resp:
-            return resp.status == 200
-    except (urllib.error.URLError, OSError):
+        with open(path) as f:
+            raw = yaml.safe_load(f)
+    except FileNotFoundError:
+        return {"error": f"config file not found: {path}"}
+    except Exception as exc:
+        return {"error": f"failed to read config: {exc}"}
+
+    cfg = (raw or {}).get("cluster")
+    if not cfg:
+        return {"error": "config.yml is missing 'cluster' section"}
+
+    if not cfg.get("binary", "").strip():
+        return {"error": "'cluster.binary' must not be empty in config.yml"}
+
+    return cfg
+
+
+def _resolve_project_root(explicit: str, start: Path = None) -> Optional[Path]:
+    if explicit and explicit.strip():
+        return Path(explicit.strip())
+
+    base = start or Path(__file__).parent
+    for candidate in [base] + list(base.parents):
+        if (candidate / "config" / "server.toml").is_file():
+            return candidate
+    return None
+
+
+def _node_list(cfg: dict, root: Path) -> list:
+    mode = cfg.get("mode", "single")
+
+    def resolve(p: str) -> Path:
+        p = p.strip()
+        if Path(p).is_absolute():
+            return Path(p)
+        return root / p
+
+    if mode == "multi":
+        nodes = cfg.get("multi", {}).get("nodes", [])
+        return [
+            {
+                "name": f"broker-{i + 1}",
+                "config_path": resolve(n["config"]),
+                "data_dir": resolve(n["data_dir"]),
+                "mqtt_port": n["mqtt_port"],
+            }
+            for i, n in enumerate(nodes)
+        ]
+    else:
+        single = cfg.get("single", {})
+        return [
+            {
+                "name": "broker-1",
+                "config_path": resolve(single["config"]),
+                "data_dir": resolve(single["data_dir"]),
+                "mqtt_port": single["mqtt_port"],
+            }
+        ]
+
+
+# ---------------------------------------------------------------------------
+# Health check
+# ---------------------------------------------------------------------------
+
+
+def _health_check(mqtt_port: int) -> bool:
+    """Verify MQTT readiness by sending a raw CONNECT and waiting for any CONNACK.
+    Any CONNACK (including rc=5 not-authorized) means the MQTT service is live.
+    A plain TCP check can succeed before the MQTT handler is initialized."""
+    try:
+        # MQTT v3.1.1 CONNECT: clean_session, client_id="rmq-probe", no auth
+        # Fixed header + remaining(21) + protocol name + level + flags + keepalive + client_id
+        packet = (
+            b"\x10\x15"  # CONNECT, remaining=21
+            b"\x00\x04MQTT"  # protocol name
+            b"\x04"  # protocol level 3.1.1
+            b"\x02"  # connect flags: clean session
+            b"\x00\x0a"  # keep alive 10s
+            b"\x00\x09rmq-probe"  # client ID length + value
+        )
+        with socket.create_connection(("127.0.0.1", mqtt_port), timeout=2) as sock:
+            sock.sendall(packet)
+            data = sock.recv(4)
+            return (
+                len(data) >= 2 and data[0] == 0x20
+            )  # any CONNACK means service is ready
+    except OSError:
         return False
 
 
-def _kill_all() -> None:
-    """Best-effort kill of all tracked broker processes."""
+# ---------------------------------------------------------------------------
+# Actions
+# ---------------------------------------------------------------------------
+
+
+def _action_start() -> dict:
+    if _BROKERS:
+        return {
+            "error": "Cluster is already running. Call stop first if you want to restart."
+        }
+
+    cfg = _load_config()
+    if "error" in cfg:
+        return cfg
+
+    root = _resolve_project_root(cfg.get("project_root", ""))
+    if root is None:
+        return {
+            "error": "Cannot locate project root. Set 'cluster.project_root' in config.yml."
+        }
+
+    binary_rel = cfg["binary"].strip()
+    binary = Path(binary_rel) if Path(binary_rel).is_absolute() else root / binary_rel
+    if not binary.is_file():
+        return {
+            "error": (
+                f"broker-server binary not found at {binary}. "
+                "Check 'cluster.binary' in config.yml."
+            )
+        }
+
+    nodes = _node_list(cfg, root)
+
+    for node in nodes:
+        if not node["config_path"].is_file():
+            return {
+                "error": (
+                    f"Config file not found for {node['name']}: {node['config_path']}. "
+                    "Check 'cluster.mode' and paths in config.yml."
+                )
+            }
+
+    started = []
+    for node in nodes:
+        node["data_dir"].mkdir(parents=True, exist_ok=True)
+        log_file = node["data_dir"] / "broker.log"
+        try:
+            with open(log_file, "w") as lf:
+                proc = subprocess.Popen(
+                    [str(binary), "--conf", str(node["config_path"])],
+                    stdout=lf,
+                    stderr=subprocess.STDOUT,
+                    close_fds=True,
+                    cwd=str(root),
+                )
+        except OSError as exc:
+            for s in started:
+                try:
+                    _BROKERS[s]["process"].kill()
+                except Exception:
+                    pass
+            _BROKERS.clear()
+            return {"error": f"Failed to start {node['name']}: {exc}"}
+
+        _BROKERS[node["name"]] = {
+            "process": proc,
+            "mqtt_port": node["mqtt_port"],
+            "data_dir": str(node["data_dir"]),
+        }
+        started.append(node["name"])
+
+    for node in nodes:
+        deadline = time.monotonic() + _HEALTH_TIMEOUT
+        while time.monotonic() < deadline:
+            if _health_check(node["mqtt_port"]):
+                break
+            time.sleep(_HEALTH_INTERVAL)
+        else:
+            data_dirs = [info["data_dir"] for info in _BROKERS.values()]
+            for info in _BROKERS.values():
+                try:
+                    info["process"].kill()
+                    info["process"].wait(timeout=5)
+                except Exception:
+                    pass
+            _BROKERS.clear()
+            for d in data_dirs:
+                shutil.rmtree(d, ignore_errors=True)
+            return {
+                "status": "failed",
+                "error": (
+                    f"Health check failed for {node['name']} after {_HEALTH_TIMEOUT}s. "
+                    f"Check logs: {node['data_dir']}/broker.log"
+                ),
+            }
+
+    endpoints = [f"127.0.0.1:{n['mqtt_port']}" for n in nodes]
+    return {
+        "status": "running",
+        "endpoint": endpoints[0],
+        "endpoints": endpoints,
+        "nodes": list(_BROKERS.keys()),
+    }
+
+
+def _kill_stray_brokers(binary: str) -> int:
+    """Kill any broker-server processes not tracked in _BROKERS (e.g. after external SIGKILL).
+    Returns the number of stray processes killed."""
+    killed = 0
+    try:
+        result = subprocess.run(["pgrep", "-f", binary], capture_output=True, text=True)
+        for pid_str in result.stdout.splitlines():
+            try:
+                pid = int(pid_str.strip())
+                subprocess.run(["kill", "-9", str(pid)], check=False)
+                killed += 1
+            except (ValueError, OSError):
+                pass
+        if killed:
+            time.sleep(1)  # wait for OS to reclaim ports
+    except OSError:
+        pass
+    return killed
+
+
+def _action_stop() -> dict:
+    cfg = _load_config()
+    binary_name = (
+        Path(cfg.get("binary", "broker-server")).name
+        if "error" not in cfg
+        else "broker-server"
+    )
+
+    # Collect tracked data dirs; fall back to config-defined dirs so stop works
+    # even when called in a fresh process (after external SIGKILL, for example).
+    data_dirs = [info["data_dir"] for info in _BROKERS.values()]
+    if not data_dirs and "error" not in cfg:
+        root = _resolve_project_root(cfg.get("project_root", ""))
+        if root:
+            try:
+                for node in _node_list(cfg, root):
+                    d = str(node["data_dir"])
+                    if Path(d).exists():
+                        data_dirs.append(d)
+            except Exception:
+                pass
+
     for name, info in list(_BROKERS.items()):
         proc = info.get("process")
         if proc and proc.poll() is None:
@@ -116,113 +303,16 @@ def _kill_all() -> None:
                 logger.warning("cluster: failed to kill %s: %s", name, exc)
     _BROKERS.clear()
 
+    stray = _kill_stray_brokers(binary_name)
+    if stray:
+        logger.info("cluster: killed %d stray broker process(es)", stray)
 
-def _cleanup_data_dirs(data_dirs: list) -> None:
     for d in data_dirs:
         try:
             shutil.rmtree(d, ignore_errors=True)
         except Exception as exc:
             logger.warning("cluster: failed to remove data dir %s: %s", d, exc)
 
-
-# ---------------------------------------------------------------------------
-# Actions
-# ---------------------------------------------------------------------------
-
-def _action_start() -> dict:
-    binary = _robustmq_binary()
-    if binary is None:
-        return {
-            "error": (
-                "ROBUSTMQ_HOME is not set. "
-                "Export it to the directory containing the RobustMQ installation, "
-                "e.g. export ROBUSTMQ_HOME=/opt/robustmq"
-            )
-        }
-    if not Path(binary).is_file():
-        return {
-            "error": (
-                f"RobustMQ binary not found at {binary}. "
-                "Check that ROBUSTMQ_HOME points to a valid installation."
-            )
-        }
-
-    if _BROKERS:
-        return {
-            "error": (
-                "Cluster is already running. "
-                "Call stop first if you want to restart."
-            )
-        }
-
-    data_dirs: list[str] = []
-    started: list[str] = []
-
-    for node_name, port in _BROKER_PORTS.items():
-        data_dir = tempfile.mkdtemp(prefix=f"rmq-{node_name}-")
-        data_dirs.append(data_dir)
-
-        log_dir = Path(data_dir) / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        log_file = log_dir / "broker.log"
-
-        cmd = [
-            binary,
-            "--node-name", node_name,
-            "--mqtt-port", str(port),
-            "--data-dir", data_dir,
-        ]
-
-        try:
-            with open(log_file, "w") as lf:
-                proc = subprocess.Popen(
-                    cmd,
-                    stdout=lf,
-                    stderr=subprocess.STDOUT,
-                    close_fds=True,
-                )
-        except OSError as exc:
-            _kill_all()
-            _cleanup_data_dirs(data_dirs)
-            return {"error": f"Failed to start {node_name}: {exc}"}
-
-        _BROKERS[node_name] = {
-            "process": proc,
-            "port": port,
-            "data_dir": data_dir,
-            "node_name": node_name,
-        }
-        started.append(node_name)
-
-    # Wait then health-check the first broker as cluster representative.
-    time.sleep(_HEALTH_TIMEOUT)
-    if not _health_check(_BROKER_PORTS["broker-1"]):
-        _kill_all()
-        _cleanup_data_dirs(data_dirs)
-        return {
-            "status": "failed",
-            "error": (
-                "Health check failed for broker-1 on port 1883 after "
-                f"{_HEALTH_TIMEOUT}s. Check logs in: {data_dirs[0]}/logs/broker.log"
-            ),
-        }
-
-    return {
-        "status": "running",
-        "endpoint": "127.0.0.1:1883",
-        "nodes": list(_BROKER_PORTS.keys()),
-        "ports": _BROKER_PORTS,
-        "data_dirs": data_dirs,
-    }
-
-
-def _action_stop() -> dict:
-    if not _BROKERS:
-        return {"status": "stopped", "note": "No running cluster found."}
-
-    data_dirs = [info["data_dir"] for info in _BROKERS.values()]
-    _kill_all()
-    _cleanup_data_dirs(data_dirs)
     return {"status": "stopped", "cleaned_dirs": data_dirs}
 
 
@@ -246,19 +336,24 @@ def _action_status() -> dict:
     else:
         status = "running"
 
+    endpoints = [f"127.0.0.1:{info['mqtt_port']}" for info in _BROKERS.values()]
     return {
         "status": status,
         "running_processes": len(alive),
         "total_processes": len(_BROKERS),
         "alive_nodes": alive,
         "dead_nodes": dead,
-        "endpoint": "127.0.0.1:1883" if alive else None,
+        "endpoint": f"127.0.0.1:{list(_BROKERS.values())[0]['mqtt_port']}"
+        if alive
+        else None,
+        "endpoints": endpoints,
     }
 
 
 # ---------------------------------------------------------------------------
 # Tool handler
 # ---------------------------------------------------------------------------
+
 
 def _cluster_handler(args: dict, **_) -> str:
     action = args.get("action", "")
@@ -287,11 +382,10 @@ _SCHEMA: dict = {
     "name": "cluster_manage",
     "description": (
         "Start, stop, or query the RobustMQ test cluster. "
-        "Spawns 3 broker processes locally (no Docker). "
-        "Requires ROBUSTMQ_HOME env var — fails immediately if unset. "
-        "start: launches broker-1/2/3 on ports 1883/2883/3883, "
-        "waits 5 s, health-checks broker-1, returns endpoint '127.0.0.1:1883'. "
-        "stop: kills all brokers and removes their temp data dirs. "
+        "Reads configuration from chaos-test/config.yml. "
+        "Supports single-node and multi-node modes. "
+        "start: launches broker(s) using existing TOML configs, health-checks each MQTT port. "
+        "stop: kills all brokers and removes their data dirs. "
         "status: returns per-node liveness."
     ),
     "parameters": {
