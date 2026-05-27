@@ -139,6 +139,9 @@ detect_current_platform() {
         FreeBSD)
             os_type="freebsd"
             ;;
+        MINGW*|MSYS*|CYGWIN*)
+            os_type="windows"
+            ;;
         *)
             log_error "Unsupported OS: $(uname -s)"
             return 1
@@ -169,7 +172,9 @@ get_rust_target() {
         "darwin-amd64") echo "x86_64-apple-darwin" ;;
         "darwin-arm64") echo "aarch64-apple-darwin" ;;
         "freebsd-amd64") echo "x86_64-unknown-freebsd" ;;
-        *) 
+        "windows-amd64") echo "x86_64-pc-windows-msvc" ;;
+        "windows-arm64") echo "aarch64-pc-windows-msvc" ;;
+        *)
             log_error "Unsupported platform: $platform"
             return 1
             ;;
@@ -301,9 +306,9 @@ build_server() {
 
     # Build server binaries
     log_info "Building server binaries..."
-    
+
     local cargo_cmd="cargo build --release --target $rust_target"
-    
+
     # Build main server
     if ! $cargo_cmd --bin broker-server; then
         log_error "Failed to build broker-server"
@@ -339,7 +344,23 @@ create_package() {
     mkdir -p "$package_dir"/{bin,libs,config,dist}
 
     # Copy bin directory from source code (scripts, startup files, etc.)
-    if [ -d "$PROJECT_ROOT/bin" ]; then
+    # On Windows the shell scripts in bin/ are not executable; skip them and
+    # leave a note explaining how to start the server directly.
+    if [[ "$platform" == windows-* ]]; then
+        cat > "$package_dir/bin/README.txt" << 'WINEOF'
+Windows users: the shell scripts in this directory are not supported on Windows.
+Start the server directly from the libs/ directory:
+
+  libs\broker-server.exe --config config\server.toml
+
+Management tool:
+  libs\cli-command.exe --help
+
+Benchmark tool:
+  libs\cli-bench.exe --help
+WINEOF
+        log_info "Skipped shell scripts in bin/ for Windows; added README.txt"
+    elif [ -d "$PROJECT_ROOT/bin" ]; then
         cp -r "$PROJECT_ROOT/bin"/* "$package_dir/bin/" 2>/dev/null || true
         log_info "Copied source bin directory"
     fi
@@ -367,19 +388,12 @@ create_package() {
         return 1
     fi
 
-    # Copy only selected configuration directories
-    if [ -d "$PROJECT_ROOT/config/certs" ]; then
-        cp -r "$PROJECT_ROOT/config/certs" "$package_dir/config/" 2>/dev/null || true
-        log_info "Copied config/certs directory"
+    # Copy entire config directory into package
+    if [ -d "$PROJECT_ROOT/config" ]; then
+        cp -r "$PROJECT_ROOT/config"/. "$package_dir/config/" 2>/dev/null || true
+        log_info "Copied config directory"
     else
-        log_warning "config/certs directory not found"
-    fi
-
-    if [ -d "$PROJECT_ROOT/config/template" ]; then
-        cp -r "$PROJECT_ROOT/config/template"/. "$package_dir/config/" 2>/dev/null || true
-        log_info "Copied files from config/template to config/"
-    else
-        log_warning "config/template directory not found"
+        log_warning "config directory not found"
     fi
 
     # Copy LICENSE to root directory
