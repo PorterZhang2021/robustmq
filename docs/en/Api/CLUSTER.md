@@ -172,6 +172,12 @@ All interfaces return a unified JSON response structure:
         "max_sessions": 5000000,
         "max_publish_rate": 10000
       }
+    },
+    "admin": {
+      "username": "admin",
+      "password": "admin",
+      "jwt_secret": "robustmq-change-me-in-production",
+      "token_ttl_hours": 8
     }
   },
   "error": null
@@ -363,7 +369,7 @@ All interfaces return a unified JSON response structure:
 
 ### 3. Get Cluster Status
 
-- **Endpoint**: `GET /api/cluster/status`
+- **Endpoint**: `GET /api/info` or `GET /`
 - **Description**: Returns cluster runtime status, including version, node list, and Raft group status for each internal group (`mqtt`, `offset`, `meta`).
 
 - **Response Example**:
@@ -665,7 +671,7 @@ curl -X GET http://localhost:8080/api/cluster/config/get
 
 ### Get Cluster Status
 ```bash
-curl -X GET http://localhost:8080/api/cluster/status
+curl -X GET http://localhost:8080/
 ```
 
 ### Set Flapping Detection Configuration
@@ -686,7 +692,7 @@ A **Tenant** is the core multi-tenancy concept in RobustMQ, providing logical is
 
 ### 4. List Tenants
 
-- **Endpoint**: `GET /api/tenant/list`
+- **Endpoint**: `GET /api/cluster/tenant/list`
 - **Description**: List all tenants. Supports pagination, sorting, and filtering.
 - **Query Parameters**:
 
@@ -726,17 +732,17 @@ A **Tenant** is the core multi-tenancy concept in RobustMQ, providing logical is
 - **curl Example**:
 ```bash
 # List all tenants
-curl -X GET "http://localhost:8080/api/tenant/list"
+curl -X GET "http://localhost:8080/api/cluster/tenant/list"
 
 # Fuzzy search tenants with "business" in the name
-curl -X GET "http://localhost:8080/api/tenant/list?tenant_name=business"
+curl -X GET "http://localhost:8080/api/cluster/tenant/list?tenant_name=business"
 ```
 
 ---
 
 ### 5. Create Tenant
 
-- **Endpoint**: `POST /api/tenant/create`
+- **Endpoint**: `POST /api/cluster/tenant/create`
 - **Description**: Create a new tenant.
 - **Request Body**:
 
@@ -776,7 +782,7 @@ curl -X GET "http://localhost:8080/api/tenant/list?tenant_name=business"
 
 - **curl Example**:
 ```bash
-curl -X POST http://localhost:8080/api/tenant/create \
+curl -X POST http://localhost:8080/api/cluster/tenant/create \
   -H "Content-Type: application/json" \
   -d '{"tenant_name": "business-a", "desc": "Business A tenant"}'
 ```
@@ -785,7 +791,7 @@ curl -X POST http://localhost:8080/api/tenant/create \
 
 ### 6. Delete Tenant
 
-- **Endpoint**: `POST /api/tenant/delete`
+- **Endpoint**: `POST /api/cluster/tenant/delete`
 - **Description**: Delete a tenant by name. After deletion, metadata belonging to the tenant is no longer managed by it.
 - **Request Body**:
 
@@ -811,7 +817,7 @@ curl -X POST http://localhost:8080/api/tenant/create \
 
 - **curl Example**:
 ```bash
-curl -X POST http://localhost:8080/api/tenant/delete \
+curl -X POST http://localhost:8080/api/cluster/tenant/delete \
   -H "Content-Type: application/json" \
   -d '{"tenant_name": "business-a"}'
 ```
@@ -820,7 +826,7 @@ curl -X POST http://localhost:8080/api/tenant/delete \
 
 ### 7. Update Tenant
 
-- **Endpoint**: `POST /api/tenant/update`
+- **Endpoint**: `POST /api/cluster/tenant/update`
 - **Description**: Update a tenant's description and resource quota. The tenant must already exist. If `config` is omitted, the existing configuration is preserved.
 - **Request Body**:
 
@@ -867,7 +873,7 @@ curl -X POST http://localhost:8080/api/tenant/delete \
 
 - **curl Example**:
 ```bash
-curl -X POST http://localhost:8080/api/tenant/update \
+curl -X POST http://localhost:8080/api/cluster/tenant/update \
   -H "Content-Type: application/json" \
   -d '{"tenant_name": "business-a", "desc": "Business A tenant (updated)", "config": {"max_connections_per_node": 100000}}'
 ```
@@ -876,17 +882,21 @@ curl -X POST http://localhost:8080/api/tenant/update \
 
 ## Health Check
 
-### 8. Liveness Check
+### 8. Node Health Check
 
-- **Endpoint**: `GET /cluster/healthy`
-- **Description**: Check if the service is alive. Returns `true` when healthy.
+- **Endpoint**: `GET /health/node`
+- **Description**: Check if the current node is alive. Suitable for K8s liveness probe. This endpoint is **not** under the `/api` prefix.
 - **Request Parameters**: None
 - **Response Example**:
 ```json
 {
   "code": 0,
-  "message": "success",
-  "data": true
+  "data": {
+    "status": "ok",
+    "check_type": "node",
+    "message": "node is alive"
+  },
+  "error": null
 }
 ```
 
@@ -910,7 +920,7 @@ curl -X POST http://localhost:8080/api/tenant/update \
   }
 }
 ```
-  - **503 Service Unavailable** — Ports not ready:
+- **503 Service Unavailable** — Ports not ready:
 ```json
 {
   "code": 0,
