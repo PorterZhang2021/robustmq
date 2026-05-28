@@ -131,8 +131,8 @@ def _parse_prometheus(text: str) -> dict:
     return result
 
 
-def _scrape_metrics(http_port: int) -> dict:
-    url = f"http://127.0.0.1:{http_port}/metrics"
+def _scrape_metrics(http_port: int, metrics_path: str = "/metrics") -> dict:
+    url = f"http://127.0.0.1:{http_port}{metrics_path}"
     try:
         with urllib.request.urlopen(url, timeout=5) as resp:
             text = resp.read().decode("utf-8", errors="replace")
@@ -148,23 +148,57 @@ def _scrape_metrics(http_port: int) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _find_log_file(data_dir: str, pattern: str) -> Path:
+    """Find the most recent log file matching pattern in data_dir/logs/."""
+    logs_dir = Path(data_dir) / "logs"
+    if not logs_dir.exists():
+        return logs_dir / pattern
+
+    import glob, os
+
+    files = glob.glob(str(logs_dir / pattern))
+    if files:
+        return Path(max(files, key=os.path.getmtime))
+    return logs_dir / pattern
+
+
 def _action_collect_logs(data_dirs: list, lines: int) -> dict:
     """
     data_dirs: list of paths returned by cluster start (same order as nodes).
     """
     result: dict = {}
-    node_names = list(_NODES.keys())
+    node_names = list(_load_nodes().keys())
+
+    # Load log pattern from config
+    log_pattern = "server.*.log"
+    try:
+        with open(_CONFIG_PATH) as f:
+            raw = yaml.safe_load(f) or {}
+        log_pattern = raw.get("observability", {}).get("log_pattern", "server.*.log")
+    except Exception:
+        pass
+
     for i, data_dir in enumerate(data_dirs):
         node = node_names[i] if i < len(node_names) else f"broker-{i+1}"
-        log_path = Path(data_dir) / "logs" / "broker.log"
+        log_path = _find_log_file(data_dir, log_pattern)
         result[node] = _tail_lines(log_path, lines)
     return {"logs": result}
 
 
 def _action_collect_metrics() -> dict:
     metrics: dict = {}
+
+    # Load metrics path from config
+    metrics_path = "/metrics"
+    try:
+        with open(_CONFIG_PATH) as f:
+            raw = yaml.safe_load(f) or {}
+        metrics_path = raw.get("observability", {}).get("metrics_path", "/metrics")
+    except Exception:
+        pass
+
     for node, info in _load_nodes().items():
-        metrics[node] = _scrape_metrics(info["http_port"])
+        metrics[node] = _scrape_metrics(info["http_port"], metrics_path)
     return {"metrics": metrics}
 
 

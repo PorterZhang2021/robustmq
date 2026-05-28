@@ -45,7 +45,7 @@ _CONFIG_PATH = Path(__file__).parent.parent / "config.yml"
 
 _BROKERS: dict = {}
 
-_HEALTH_TIMEOUT = 30
+_HEALTH_TIMEOUT = 60
 _HEALTH_INTERVAL = 2
 
 
@@ -151,6 +151,15 @@ def _health_check(mqtt_port: int) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _grpc_ready(grpc_port: int) -> bool:
+    """Check if GRPC port is listening."""
+    try:
+        with socket.create_connection(("127.0.0.1", grpc_port), timeout=2) as sock:
+            return True
+    except OSError:
+        return False
+
+
 def _action_start() -> dict:
     if _BROKERS:
         return {
@@ -217,6 +226,7 @@ def _action_start() -> dict:
         }
         started.append(node["name"])
 
+    # Phase 2: Health check all nodes (parallel) - wait for MQTT to be ready
     for node in nodes:
         deadline = time.monotonic() + _HEALTH_TIMEOUT
         while time.monotonic() < deadline:

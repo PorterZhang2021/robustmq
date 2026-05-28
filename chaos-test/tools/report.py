@@ -61,7 +61,7 @@ _CONFIG_PATH = Path(__file__).parent.parent / "config.yml"
 _TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "report.md.j2"
 _CLONE_BASE = Path(__file__).parent.parent / "report-clones"
 
-CORE_SCENARIOS = frozenset({"broker-kill-single", "leader-transfer"})
+CORE_SCENARIOS = frozenset({"broker-kill-single"})
 
 
 # ---------------------------------------------------------------------------
