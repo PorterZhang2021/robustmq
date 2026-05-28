@@ -103,15 +103,15 @@ extract_version_from_cargo() {
     fi
 
     local version=""
-    
+
     # Method 1: Look for workspace.package version
     version=$(grep -A 10 "^\[workspace\.package\]" "$cargo_file" | grep "^version" | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
-    
+
     # Method 2: Look for regular package version if workspace version not found
     if [ -z "$version" ]; then
         version=$(grep -A 10 "^\[package\]" "$cargo_file" | grep "^version" | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
     fi
-    
+
     # Method 3: Simple fallback
     if [ -z "$version" ]; then
         version=$(grep "^version\s*=" "$cargo_file" | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
@@ -216,7 +216,7 @@ check_dependencies() {
             echo
             return 1
         fi
-        
+
         if ! command -v git >/dev/null 2>&1; then
             log_error "git not found. Please install git for frontend repository cloning."
             echo
@@ -241,20 +241,20 @@ build_frontend() {
 
     local frontend_dir="$PROJECT_ROOT/build/robustmq-copilot"
     local frontend_repo="https://github.com/robustmq/robustmq-copilot.git"
-    
+
     # Check if frontend directory exists, if not clone it
     if [ ! -d "$frontend_dir" ]; then
         log_info "Frontend directory not found, cloning from $frontend_repo"
-        
+
         # Ensure build directory exists
         mkdir -p "$PROJECT_ROOT/build"
-        
+
         # Clone the frontend repository
         if ! git clone "$frontend_repo" "$frontend_dir"; then
             log_error "Failed to clone frontend repository from $frontend_repo"
             return 1
         fi
-        
+
         log_success "Frontend repository cloned successfully"
     fi
 
@@ -269,7 +269,7 @@ build_frontend() {
     cd "$PROJECT_ROOT"
 
     cd "$frontend_dir"
-    
+
     if [ ! -f "package.json" ]; then
         log_error "package.json not found in frontend directory"
         return 1
@@ -373,7 +373,7 @@ WINEOF
         if [[ "$platform" == windows-* ]]; then
             binary_path="${binary_path}.exe"
         fi
-        
+
         if [ -f "$binary_path" ]; then
             cp "$binary_path" "$package_dir/libs/"
             found_binaries+=("$binary")
@@ -419,7 +419,7 @@ WINEOF
     if [ -d "$package_dir/dist" ] && [ "$(ls -A "$package_dir/dist" 2>/dev/null)" ]; then
         frontend_status="Included"
     fi
-    
+
     cat > "$package_dir/package-info.txt" << EOF
 Package: robustmq-server
 Version: $version
@@ -437,10 +437,10 @@ EOF
     # Create tarball
     cd "$OUTPUT_DIR"
     local tarball="$package_name.tar.gz"
-    
+
     if tar -czf "$tarball" "$package_name"; then
         log_success "Created package: $tarball"
-        
+
         # Clean up directory
         rm -rf "$package_name"
     else

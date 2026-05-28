@@ -119,15 +119,15 @@ extract_version_from_cargo() {
 
     # Try multiple methods to extract version
     local version=""
-    
+
     # Method 1: Look for workspace.package version
     version=$(grep -A 10 "^\[workspace\.package\]" "$cargo_file" | grep "^version" | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
-    
+
     # Method 2: Look for regular package version if workspace version not found
     if [ -z "$version" ]; then
         version=$(grep -A 10 "^\[package\]" "$cargo_file" | grep "^version" | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
     fi
-    
+
     # Method 3: Simple fallback
     if [ -z "$version" ]; then
         version=$(grep "^version\s*=" "$cargo_file" | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
@@ -264,7 +264,7 @@ check_release_exists() {
 generate_custom_release_notes() {
     local version="$1"
     local build_date=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S CST')
-    
+
     cat << EOF
 ## 🚀 RobustMQ $version
 
@@ -387,7 +387,7 @@ create_github_release() {
 
     # Generate custom release notes (installation guide, etc.)
     local custom_notes=$(generate_custom_release_notes "$version")
-    
+
     # Escape the body for JSON
     local escaped_body=$(echo "$custom_notes" | jq -Rs .)
 
