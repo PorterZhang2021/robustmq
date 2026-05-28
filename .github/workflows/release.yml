@@ -70,6 +70,18 @@ jobs:
           sudo apt-get clean
           df -h
 
+      - name: Configure 8GB swap (linux-arm64 only, prevent OOM during link)
+        if: matrix.platform == 'linux-arm64'
+        run: |
+          sudo swapoff -a || true
+          sudo fallocate -l 8G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          echo "vm.swappiness=10" | sudo tee -a /etc/sysctl.conf
+          sudo sysctl -p
+          free -h
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -77,7 +89,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y protobuf-compiler cmake
+          sudo apt-get install -y protobuf-compiler cmake pkg-config libssl-dev libsasl2-dev libcurl4-openssl-dev libzstd-dev
 
       - name: Install system dependencies (macOS)
         if: runner.os == 'macOS'
@@ -131,8 +143,19 @@ jobs:
         shell: pwsh
         run: choco install jq -y
 
-      - name: Run make release (Linux / macOS)
-        if: runner.os != 'Windows'
+      - name: Run make release (linux-arm64; reduced parallelism + no LTO to avoid OOM)
+        if: matrix.platform == 'linux-arm64'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_BUILD_JOBS: '2'
+          CARGO_PROFILE_RELEASE_LTO: 'false'
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '16'
+        run: |
+          echo "Building and releasing for ${{ matrix.platform }} (memory-constrained)"
+          make release
+
+      - name: Run make release (Linux / macOS, other targets)
+        if: runner.os != 'Windows' && matrix.platform != 'linux-arm64'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

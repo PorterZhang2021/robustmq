@@ -90,9 +90,12 @@ impl AdminServer {
             auth_middleware,
         ));
 
+        // Note: `/` is intentionally not registered here — it is left to the
+        // static fallback so the SPA's index.html (login page) is served.
+        // The cluster info JSON previously exposed on `/` is still available
+        // at `/api/info`.
         let route = Router::new()
             .merge(mcp_route())
-            .route("/", get(index))
             .route(DEBUG_PPROF_FLAMEGRAPH_PATH, get(pprof_flamegraph))
             .route(METRICS_PATH, get(|| async { dump_metrics() }))
             .merge(auth_router())
@@ -473,7 +476,7 @@ mod tests {
         use axum::http::HeaderMap;
         use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-        let socket_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080);
+        let socket_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 58080);
 
         // Test with no headers
         let headers = HeaderMap::new();
