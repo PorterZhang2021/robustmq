@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use common_base::{
-    port::is_local_port_listening,
+    port::{is_local_port_listening, is_local_udp_port_listening},
     role::{is_broker_node, is_engine_node},
 };
 use common_config::broker::broker_config;
@@ -32,7 +32,9 @@ pub fn healthy_ready_check() -> bool {
             || !is_local_port_listening(config.mqtt_server.tls_port)
             || !is_local_port_listening(config.mqtt_server.websocket_port)
             || !is_local_port_listening(config.mqtt_server.websockets_port)
-            || !is_local_port_listening(config.mqtt_server.quic_port))
+            // QUIC listens on UDP, so it must be probed with a UDP bind check
+            // rather than a TCP connect (which would always fail here).
+            || !is_local_udp_port_listening(config.mqtt_server.quic_port))
     {
         return false;
     }
