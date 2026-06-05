@@ -14,8 +14,9 @@
 
 use metadata_struct::storage::{adapter_read_config::AdapterWriteRespRow, record::StorageRecord};
 use protocol::storage::protocol::{
-    ApiKey, ReadReq, ReadReqBody, ReadReqMessage, ReadResp, ReadRespBody, ReqHeader, RespHeader,
-    StorageEngineNetworkError, WriteReq, WriteReqBody, WriteResp, WriteRespBody, WriteRespMessage,
+    ApiKey, FetchReq, FetchReqBody, ReadReq, ReadReqBody, ReadReqMessage, ReadResp, ReadRespBody,
+    ReqHeader, RespHeader, StorageEngineNetworkError, WriteReq, WriteReqBody, WriteResp,
+    WriteRespBody, WriteRespMessage,
 };
 
 use crate::core::error::StorageEngineError;
@@ -28,6 +29,8 @@ pub fn build_write_req(shard_name: String, messages: Vec<Vec<u8>>) -> WriteReq {
         body: WriteReqBody {
             shard_name,
             messages,
+            acks: 1,
+            current_leader_epoch: 0,
         },
     }
 }
@@ -51,6 +54,15 @@ pub fn build_read_req(messages: Vec<ReadReqMessage>) -> ReadReq {
             api_key: ApiKey::Read,
         },
         body: ReadReqBody { messages },
+    }
+}
+
+pub fn build_fetch_req(body: FetchReqBody) -> FetchReq {
+    FetchReq {
+        header: ReqHeader {
+            api_key: ApiKey::Fetch,
+        },
+        body,
     }
 }
 
