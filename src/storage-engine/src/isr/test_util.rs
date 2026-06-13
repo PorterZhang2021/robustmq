@@ -30,8 +30,10 @@ use crate::isr::log::ReplicaLog;
 use async_trait::async_trait;
 use broker_core::cache::NodeCacheManager;
 use bytes::Bytes;
+use common_config::storage::StorageType;
 use metadata_struct::storage::record::{StorageRecord, StorageRecordMetadata};
 use metadata_struct::storage::segment::EngineSegment;
+use metadata_struct::storage::shard::{EngineShard, EngineShardConfig};
 use protocol::storage::protocol::{
     FetchReqBody, FetchRespBody, OffsetsForLeaderEpochReqBody, OffsetsForLeaderEpochRespBody,
 };
@@ -40,6 +42,14 @@ use std::sync::Arc;
 
 pub fn init_offsets(engine: &MemoryStorageEngine, shards: &[&str]) {
     for shard in shards {
+        engine.cache_manager.set_shard(EngineShard {
+            shard_name: shard.to_string(),
+            config: EngineShardConfig {
+                storage_type: StorageType::EngineMemory,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
         engine.cache_manager.save_offset_state(
             shard.to_string(),
             crate::commitlog::offset::ShardOffsetState::default(),
@@ -78,6 +88,7 @@ impl FetchTransport for InProcLeader {
             shards.push(
                 fetch_one_shard(
                     &self.engine.cache_manager,
+                    &self.engine.commit_log_offset.rocksdb_engine_handler,
                     self.engine.as_ref(),
                     req.replica_id,
                     req.replica_broker_epoch,
@@ -145,6 +156,7 @@ pub fn seg_state(shard: &str, leader_node_id: u64) -> SegmentFetchState {
         current_leader_epoch: 1,
         max_bytes: 1024 * 1024,
         cache: LeaderEpochCache::load(test_rocksdb_instance(), shard, 0).unwrap(),
+        needs_truncation: false,
     }
 }
 
