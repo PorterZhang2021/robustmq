@@ -401,6 +401,15 @@ overflow-checks = false # No runtime overhead
 opt-level = 3           # Maximum optimization
 strip = true            # Strip symbols to reduce binary size
 
+[profile.release-fast]
+# Local packaging profile - faster builds than release, without changing release artifacts.
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
+opt-level = 2
+strip = false
+
 [profile.test]
 opt-level = 0                # No optimization for faster test compilation
 debug = 1                    # Minimal debug info (line tables only)
