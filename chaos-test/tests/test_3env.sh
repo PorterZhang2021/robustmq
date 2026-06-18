@@ -85,11 +85,42 @@ test_status_without_state_reports_missing_state() {
     assert_contains "$output" "No state file found"
 }
 
+test_start_uses_per_node_ready_gate() {
+    assert_contains "$(grep -F 'wait_for_node_ready' "$SCRIPT")" "wait_for_node_ready"
+    assert_contains "$(grep -F 'detect_startup_fatal' "$SCRIPT")" "detect_startup_fatal"
+    assert_contains "$(grep -F 'print_node_log_tail' "$SCRIPT")" "print_node_log_tail"
+
+    local launch_line ready_line
+    launch_line="$(grep -n 'pid="$(launch_node "$i")"' "$SCRIPT" | head -1 | cut -d: -f1)"
+    ready_line="$(grep -n 'wait_for_node_ready "$i" "$pid"' "$SCRIPT" | head -1 | cut -d: -f1)"
+
+    [ -n "$launch_line" ] || fail "start should launch nodes inside the node loop"
+    [ -n "$ready_line" ] || fail "start should wait for each node immediately after launch"
+    [ "$launch_line" -lt "$ready_line" ] || fail "start should wait after launch"
+}
+
+test_startup_fatal_scan_ignores_historical_log_lines() {
+    assert_contains "$(grep -F 'node_process_log_size' "$SCRIPT")" "node_process_log_size"
+    assert_contains "$(grep -F 'log_offset="$(node_process_log_size "$i")"' "$SCRIPT")" 'log_offset="$(node_process_log_size "$i")"'
+    assert_contains "$(grep -F 'wait_for_node_ready "$i" "$pid" "$log_offset"' "$SCRIPT")" 'wait_for_node_ready "$i" "$pid" "$log_offset"'
+    assert_contains "$(grep -F 'tail -c +"$((log_offset + 1))"' "$SCRIPT")" 'tail -c +"$((log_offset + 1))"'
+
+    local offset_line launch_line ready_line
+    offset_line="$(grep -n 'log_offset="$(node_process_log_size "$i")"' "$SCRIPT" | head -1 | cut -d: -f1)"
+    launch_line="$(grep -n 'pid="$(launch_node "$i")"' "$SCRIPT" | head -1 | cut -d: -f1)"
+    ready_line="$(grep -n 'wait_for_node_ready "$i" "$pid" "$log_offset"' "$SCRIPT" | head -1 | cut -d: -f1)"
+
+    [ "$offset_line" -lt "$launch_line" ] || fail "start should record log offset before launching the node"
+    [ "$launch_line" -lt "$ready_line" ] || fail "start should pass the launch-time log offset into readiness checks"
+}
+
 main() {
     test_script_has_valid_bash_syntax
     test_help_command_lists_supported_actions
     test_config_sources_live_outside_the_script
     test_status_without_state_reports_missing_state
+    test_start_uses_per_node_ready_gate
+    test_startup_fatal_scan_ignores_historical_log_lines
     echo "[test_3env] PASS"
 }
 

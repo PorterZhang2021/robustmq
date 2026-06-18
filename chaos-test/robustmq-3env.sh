@@ -61,6 +61,7 @@ Environment:
   ROBUSTMQ_3ENV_BUILD_FRONTEND=true  Pass --with-frontend to scripts/build.sh
   ROBUSTMQ_3ENV_OVERWRITE=true  Allow prepare to overwrite unmarked runtime roots
   ROBUSTMQ_3ENV_CONFIG_DIR=/path/dir  Use config dir with node1-node3/server.toml and logger.toml
+  ROBUSTMQ_3ENV_READY_TIMEOUT=90  Seconds to wait for each node to become ready
 EOF
 }
 
@@ -530,6 +531,53 @@ launch_node() {
     printf '%s\n' "$pid"
 }
 
+node_process_log_path() {
+    local index="$1"
+    local root="${RUNTIME_ROOTS[$index]}"
+    local broker_id
+
+    broker_id="$(broker_id_for_node "$index")"
+    printf '%s/data/broker-%s/logs/process.log\n' "$root" "$broker_id"
+}
+
+node_process_log_size() {
+    local index="$1"
+    local log_file
+
+    log_file="$(node_process_log_path "$index")"
+    if [ -f "$log_file" ]; then
+        stat -c '%s' "$log_file"
+    else
+        printf '0\n'
+    fi
+}
+
+print_node_log_tail() {
+    local index="$1"
+    local log_file
+
+    log_file="$(node_process_log_path "$index")"
+    warn "Last log lines for ${NODES[$index]}: $log_file"
+    if [ -f "$log_file" ]; then
+        tail -n 80 "$log_file" >&2 || true
+    else
+        warn "Log file not found: $log_file"
+    fi
+}
+
+detect_startup_fatal() {
+    local index="$1"
+    local log_offset="${2:-0}"
+    local log_file
+
+    log_file="$(node_process_log_path "$index")"
+    [ -f "$log_file" ] || return 1
+
+    tail -c +"$((log_offset + 1))" "$log_file" 2>/dev/null | grep -E \
+        "NodeCallManager global sender is not initialized|Failed to initialize inner topics|Timeout waiting for topic|thread '.*' panicked|panicked at|Address already in use|Permission denied" \
+        >/dev/null 2>&1
+}
+
 wait_for_port() {
     local port="$1"
     local label="$2"
@@ -545,6 +593,45 @@ wait_for_port() {
     done
 
     error "Timed out waiting for $label on port $port after ${max_wait}s"
+}
+
+wait_for_node_ready() {
+    local index="$1"
+    local pid="$2"
+    local log_offset="$3"
+    local node="${NODES[$index]}"
+    local max_wait="${ROBUSTMQ_3ENV_READY_TIMEOUT:-90}"
+    local elapsed=0
+    local grpc_port http_port mqtt_port
+
+    grpc_port="$(server_port_for_node "$index" grpc_port)"
+    http_port="$(server_port_for_node "$index" http_port)"
+    mqtt_port="$(section_port_for_node "$index" mqtt_server tcp_port)"
+
+    while [ "$elapsed" -lt "$max_wait" ]; do
+        if ! pid_running "$pid"; then
+            print_node_log_tail "$index"
+            error "$node exited before becoming ready; config=${RUNTIME_ROOTS[$index]}/config/server.toml"
+        fi
+
+        if detect_startup_fatal "$index" "$log_offset"; then
+            print_node_log_tail "$index"
+            error "$node reported a fatal startup error; config=${RUNTIME_ROOTS[$index]}/config/server.toml"
+        fi
+
+        if port_is_listening "$grpc_port" \
+            && port_is_listening "$http_port" \
+            && port_is_listening "$mqtt_port"; then
+            info "$node ready: grpc=$grpc_port http=$http_port mqtt=$mqtt_port"
+            return 0
+        fi
+
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+
+    print_node_log_tail "$index"
+    error "Timed out waiting for $node readiness after ${max_wait}s; grpc=$grpc_port http=$http_port mqtt=$mqtt_port config=${RUNTIME_ROOTS[$index]}/config/server.toml"
 }
 
 port_state() {
@@ -609,17 +696,12 @@ start() {
     local i
     for i in "${!NODES[@]}"; do
         local pid
+        local log_offset
+        log_offset="$(node_process_log_size "$i")"
         pid="$(launch_node "$i")"
         append_state "$i" "$pid"
         info "Started ${NODES[$i]} pid=$pid"
-    done
-
-    for i in "${!NODES[@]}"; do
-        local mqtt_port http_port
-        mqtt_port="$(section_port_for_node "$i" mqtt_server tcp_port)"
-        http_port="$(server_port_for_node "$i" http_port)"
-        wait_for_port "$mqtt_port" "${NODES[$i]} MQTT"
-        wait_for_port "$http_port" "${NODES[$i]} HTTP"
+        wait_for_node_ready "$i" "$pid" "$log_offset"
     done
 
     START_ROLLBACK_ACTIVE=false
