@@ -80,6 +80,6 @@ RUST_TEST_NOCAPTURE = "0"
 # Source replacement (optional - uncomment if using mirrors)
 # [source.crates-io]
 # replace-with = "ustc"
-# 
+#
 # [source.ustc]
 # registry = "sparse+https://mirrors.ustc.edu.cn/crates.io-index/"
