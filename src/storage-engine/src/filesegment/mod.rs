@@ -14,11 +14,12 @@
 
 use metadata_struct::storage::segment::{segment_name, EngineSegment};
 
+pub mod delete;
 pub mod expire;
 pub mod file;
 pub mod index;
-pub mod offset;
 pub mod read;
+pub mod replica;
 pub mod scroll;
 pub mod write_io_work;
 pub mod write_manager;

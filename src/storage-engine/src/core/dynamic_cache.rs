@@ -14,13 +14,14 @@
 
 use super::cache::StorageCacheManager;
 use crate::{
-    commitlog::offset::CommitLogOffset,
-    core::{error::StorageEngineError, segment::delete_local_segment, shard::delete_local_shard},
-    filesegment::{file::open_segment_write, offset::SegmentOffset, SegmentIdentity},
-    isr::apply::apply_leader_and_isr,
-    isr::fetcher_manager::ReplicaFetcherManager,
+    core::{
+        error::StorageEngineError,
+        offset::{ShardOffset, ShardOffsetState},
+    },
+    filesegment::{file::open_segment_write, SegmentIdentity},
+    isr::{apply::apply_leader_and_isr, fetcher_manager::ReplicaFetcherManager},
 };
-use common_config::{broker::broker_config, storage::StorageType};
+use common_config::storage::StorageType;
 use metadata_struct::storage::segment::EngineSegment;
 use metadata_struct::storage::segment_meta::EngineSegmentMetadata;
 use metadata_struct::storage::shard::EngineShard;
@@ -39,13 +40,7 @@ pub async fn update_storage_cache_metadata(
 ) -> Result<(), StorageEngineError> {
     match record.resource_type() {
         BrokerUpdateCacheResourceType::Shard => {
-            parse_shard(
-                cache_manager,
-                rocksdb_engine_handler,
-                record.action_type(),
-                &record.data,
-            )
-            .await?;
+            parse_shard(cache_manager, record.action_type(), &record.data).await?;
         }
 
         BrokerUpdateCacheResourceType::Segment => {
@@ -60,13 +55,7 @@ pub async fn update_storage_cache_metadata(
         }
 
         BrokerUpdateCacheResourceType::SegmentMeta => {
-            parse_segment_meta(
-                cache_manager,
-                rocksdb_engine_handler,
-                record.action_type(),
-                &record.data,
-            )
-            .await?;
+            parse_segment_meta(cache_manager, record.action_type(), &record.data).await?;
         }
 
         _ => {}
@@ -77,25 +66,12 @@ pub async fn update_storage_cache_metadata(
 
 async fn parse_shard(
     cache_manager: &Arc<StorageCacheManager>,
-    rocksdb_engine_handler: &Arc<RocksDBEngine>,
     action_type: BrokerUpdateCacheActionType,
     data: &[u8],
 ) -> Result<(), StorageEngineError> {
     match action_type {
         BrokerUpdateCacheActionType::Create => {
             let shard = EngineShard::decode(data)?;
-            if shard.config.storage_type == StorageType::EngineMemory
-                || shard.config.storage_type == StorageType::EngineRocksDB
-            {
-                let commit_offset =
-                    CommitLogOffset::new(cache_manager.clone(), rocksdb_engine_handler.clone());
-                commit_offset.save_earliest_offset(&shard.shard_name, 0)?;
-                commit_offset.save_latest_offset(&shard.shard_name, 0)?;
-            }
-            cache_manager.save_offset_state(
-                shard.shard_name.clone(),
-                crate::commitlog::offset::ShardOffsetState::default(),
-            );
             cache_manager.set_shard(shard);
         }
         BrokerUpdateCacheActionType::Update => {
@@ -104,11 +80,9 @@ async fn parse_shard(
         }
         BrokerUpdateCacheActionType::Delete => {
             let shard = EngineShard::decode(data)?;
-            delete_local_shard(
-                cache_manager.clone(),
-                rocksdb_engine_handler.clone(),
-                shard.shard_name,
-            );
+            if cache_manager.shards.contains_key(&shard.shard_name) {
+                cache_manager.push_pending_delete_shard(shard.shard_name);
+            }
         }
     }
     Ok(())
@@ -124,113 +98,126 @@ async fn parse_segment(
     match action_type {
         BrokerUpdateCacheActionType::Create => {
             let segment = EngineSegment::decode(data)?;
-            let shard = if let Some(shard) = cache_manager.shards.get(&segment.shard_name) {
-                shard.clone()
-            } else {
-                warn!(
-                    "Skipping segment creation for segment {} in shard '{}': shard not found in cache",
-                    segment.segment_seq, segment.shard_name
-                );
-                return Ok(());
-            };
-
-            let segment_iden = SegmentIdentity::new(&segment.shard_name, segment.segment_seq);
-            if is_stale_segment_notification(cache_manager, &segment_iden, &segment) {
-                return Ok(());
-            }
-
-            cache_manager.add_segment_replica(&segment.shard_name, segment.segment_seq);
-
-            apply_leader_and_isr(
+            create_segment(
                 cache_manager,
                 rocksdb_engine_handler,
                 fetcher_manager,
-                &segment,
+                segment,
             )
             .await?;
-
-            cache_manager.set_segment(&segment);
-            let conf = broker_config();
-            if conf.broker_id == segment.leader {
-                cache_manager.add_leader_segment(&segment_iden);
-            } else {
-                // A leader switch is delivered as a Create notification too; a node
-                // that is no longer the leader must drop the segment from its
-                // leader_segments set, otherwise it keeps running ISR maintenance
-                // for a segment it no longer leads (stale ISR proposals / churn).
-                cache_manager.remove_leader_segment(&segment_iden);
-            }
-
-            if shard.config.storage_type == StorageType::EngineSegment {
-                let segment_file = open_segment_write(cache_manager, &segment_iden).await?;
-                segment_file.try_create().await?;
-            }
-
-            if shard.config.storage_type == StorageType::EngineMemory
-                || shard.config.storage_type == StorageType::EngineRocksDB
-            {
-                // Only initialize offsets for a segment that is genuinely new on
-                // this node. A leader switch / ISR recovery / rebalance re-sends the
-                // segment to nodes that ALREADY hold its data as a "Create"; resetting
-                // offsets there would wipe the committed log's bookkeeping
-                // (latest_offset -> 0) and make the new leader truncate committed data.
-                // If offset state already exists, leave it untouched.
-                if cache_manager.get_offset_state(&shard.shard_name).is_none() {
-                    let commit_log_offset =
-                        CommitLogOffset::new(cache_manager.clone(), rocksdb_engine_handler.clone());
-                    commit_log_offset.save_earliest_offset(&shard.shard_name, 0)?;
-                    commit_log_offset.save_latest_offset(&shard.shard_name, 0)?;
-                }
-            }
         }
 
         BrokerUpdateCacheActionType::Update => {
             let segment = EngineSegment::decode(data)?;
-            let segment_iden = SegmentIdentity::new(&segment.shard_name, segment.segment_seq);
-            if is_stale_segment_notification(cache_manager, &segment_iden, &segment) {
-                return Ok(());
-            }
-
-            // An Update notification can race ahead of the segment's Create on this
-            // node (cache notifications are delivered concurrently, not ordered).
-            // Adopt the segment if its replica state isn't present yet, so the Update
-            // applies cleanly instead of failing with NotSegmentState — which would
-            // otherwise surface as a transient "Segment replicate .. Not Exists" WARN
-            // until reconcile heals it. This mirrors the Create branch and the
-            // reconcile self-heal path.
-            if cache_manager
-                .get_segment_replica(&segment.shard_name, segment.segment_seq)
-                .is_none()
-            {
-                cache_manager.add_segment_replica(&segment.shard_name, segment.segment_seq);
-            }
-
-            apply_leader_and_isr(
+            update_segment(
                 cache_manager,
                 rocksdb_engine_handler,
                 fetcher_manager,
-                &segment,
+                segment,
             )
             .await?;
-
-            cache_manager.set_segment(&segment);
-            let conf = broker_config();
-            if conf.broker_id == segment.leader {
-                cache_manager.add_leader_segment(&segment_iden);
-            } else {
-                cache_manager.remove_leader_segment(&segment_iden);
-            }
         }
         BrokerUpdateCacheActionType::Delete => {
             let segment = EngineSegment::decode(data)?;
             let segment_iden = SegmentIdentity::new(&segment.shard_name, segment.segment_seq);
-            delete_local_segment(cache_manager, rocksdb_engine_handler, &segment_iden).await?;
+            cache_manager.push_pending_delete_segment(segment_iden);
         }
     }
     Ok(())
 }
 
-fn is_stale_segment_notification(
+async fn update_segment(
+    cache_manager: &Arc<StorageCacheManager>,
+    rocksdb_engine_handler: &Arc<RocksDBEngine>,
+    fetcher_manager: &Arc<ReplicaFetcherManager>,
+    segment: EngineSegment,
+) -> Result<(), StorageEngineError> {
+    if !cache_manager.shards.contains_key(&segment.shard_name) {
+        warn!(
+            "Skipping segment update for segment {} in shard '{}': shard not found in cache",
+            segment.segment_seq, segment.shard_name
+        );
+        return Ok(());
+    }
+
+    let segment_iden = SegmentIdentity::new(&segment.shard_name, segment.segment_seq);
+    if is_outdated_segment_notify(cache_manager, &segment_iden, &segment) {
+        return Ok(());
+    }
+
+    apply_leader_and_isr(
+        cache_manager,
+        rocksdb_engine_handler,
+        fetcher_manager,
+        &segment,
+    )
+    .await?;
+
+    cache_manager.set_segment(&segment);
+    Ok(())
+}
+
+async fn create_segment(
+    cache_manager: &Arc<StorageCacheManager>,
+    rocksdb_engine_handler: &Arc<RocksDBEngine>,
+    fetcher_manager: &Arc<ReplicaFetcherManager>,
+    segment: EngineSegment,
+) -> Result<(), StorageEngineError> {
+    // check
+    let shard = if let Some(shard) = cache_manager.shards.get(&segment.shard_name) {
+        shard.clone()
+    } else {
+        warn!(
+            "Skipping segment creation for segment {} in shard '{}': shard not found in cache",
+            segment.segment_seq, segment.shard_name
+        );
+        return Ok(());
+    };
+
+    let segment_iden = SegmentIdentity::new(&segment.shard_name, segment.segment_seq);
+    if is_outdated_segment_notify(cache_manager, &segment_iden, &segment) {
+        return Ok(());
+    }
+
+    // add segment to cache
+    cache_manager.set_segment(&segment);
+
+    // init hw/leo/lso
+    if segment.segment_seq == 0 {
+        println!("segment_seqsegment:{:?}", segment);
+        let shard_offset = ShardOffset::new(cache_manager.clone(), rocksdb_engine_handler.clone());
+        shard_offset.save_earliest_offset(&shard.shard_name, 0)?;
+        shard_offset.save_latest_offset(&shard.shard_name, 0)?;
+        shard_offset.save_high_watermark_offset(&shard.shard_name, 0)?;
+        cache_manager.save_offset_state(
+            shard.shard_name.clone(),
+            ShardOffsetState {
+                earliest_offset: 0,
+                latest_offset: 0,
+                high_watermark_offset: 0,
+            },
+        );
+    }
+
+    // file segment init
+    if shard.config.storage_type == StorageType::EngineSegment {
+        let segment_file = open_segment_write(cache_manager, &segment_iden).await?;
+        segment_file.try_create().await?;
+    }
+
+    // isr change
+    apply_leader_and_isr(
+        cache_manager,
+        rocksdb_engine_handler,
+        fetcher_manager,
+        &segment,
+    )
+    .await?;
+
+    Ok(())
+}
+
+fn is_outdated_segment_notify(
     cache_manager: &Arc<StorageCacheManager>,
     segment_iden: &SegmentIdentity,
     incoming: &EngineSegment,
@@ -256,7 +243,6 @@ fn is_stale_segment_notification(
 
 async fn parse_segment_meta(
     cache_manager: &Arc<StorageCacheManager>,
-    rocksdb_engine_handler: &Arc<RocksDBEngine>,
     action_type: BrokerUpdateCacheActionType,
     data: &[u8],
 ) -> Result<(), StorageEngineError> {
@@ -283,17 +269,7 @@ async fn parse_segment_meta(
 
             let segment_iden = SegmentIdentity::new(&meta.shard_name, meta.segment_seq);
 
-            let segment_index_manager =
-                SegmentOffset::new(rocksdb_engine_handler.clone(), cache_manager.clone());
-            segment_index_manager.batch_save_segment_metadata(
-                &segment_iden,
-                meta.start_offset,
-                meta.end_offset,
-                meta.start_timestamp,
-                meta.end_timestamp,
-            )?;
             cache_manager.set_segment_meta(meta);
-
             cache_manager.sort_offset_index(&segment_iden.shard_name);
         }
 
@@ -304,13 +280,21 @@ async fn parse_segment_meta(
 
 #[cfg(test)]
 mod tests {
-    use super::is_stale_segment_notification;
+    use super::is_outdated_segment_notify;
     use crate::core::cache::StorageCacheManager;
+    use crate::core::test_tool::test_init_conf;
     use crate::filesegment::SegmentIdentity;
     use broker_core::cache::NodeCacheManager;
     use common_config::config::BrokerConfig;
     use metadata_struct::storage::segment::EngineSegment;
     use std::sync::Arc;
+
+    fn make_cache() -> Arc<StorageCacheManager> {
+        test_init_conf();
+        Arc::new(StorageCacheManager::new(Arc::new(NodeCacheManager::new(
+            BrokerConfig::default(),
+        ))))
+    }
 
     fn segment(epoch: u32) -> EngineSegment {
         EngineSegment {
@@ -333,96 +317,28 @@ mod tests {
 
     #[test]
     fn segment_epoch_monotonic_filter() {
-        let cache = Arc::new(StorageCacheManager::new(Arc::new(NodeCacheManager::new(
-            BrokerConfig::default(),
-        ))));
+        let cache = make_cache();
         let iden = SegmentIdentity::new("s1", 0);
 
-        assert!(!is_stale_segment_notification(&cache, &iden, &segment(0)));
+        assert!(!is_outdated_segment_notify(&cache, &iden, &segment(0)));
         cache.set_segment(&segment(2));
 
-        assert!(is_stale_segment_notification(&cache, &iden, &segment(1)));
-        assert!(!is_stale_segment_notification(&cache, &iden, &segment(2)));
-        assert!(!is_stale_segment_notification(&cache, &iden, &segment(3)));
+        assert!(is_outdated_segment_notify(&cache, &iden, &segment(1)));
+        assert!(!is_outdated_segment_notify(&cache, &iden, &segment(2)));
+        assert!(!is_outdated_segment_notify(&cache, &iden, &segment(3)));
     }
 
     #[test]
     fn leader_epoch_filter_within_same_segment_epoch() {
-        let cache = Arc::new(StorageCacheManager::new(Arc::new(NodeCacheManager::new(
-            BrokerConfig::default(),
-        ))));
+        let cache = make_cache();
         let iden = SegmentIdentity::new("s1", 0);
         cache.set_segment(&segment_le(5, 10));
 
-        assert!(is_stale_segment_notification(
-            &cache,
-            &iden,
-            &segment_le(5, 9)
-        ));
-        assert!(!is_stale_segment_notification(
-            &cache,
-            &iden,
-            &segment_le(5, 10)
-        ));
-        assert!(!is_stale_segment_notification(
-            &cache,
-            &iden,
-            &segment_le(5, 11)
-        ));
-        assert!(!is_stale_segment_notification(
+        assert!(is_outdated_segment_notify(&cache, &iden, &segment_le(5, 9)));
+        assert!(!is_outdated_segment_notify(
             &cache,
             &iden,
             &segment_le(6, 9)
         ));
-    }
-
-    #[test]
-    fn shard_update_notification_updates_active_segment_seq() {
-        use common_base::tools::now_second;
-        use metadata_struct::storage::shard::{EngineShard, EngineShardConfig, EngineShardStatus};
-
-        let cache = Arc::new(StorageCacheManager::new(Arc::new(NodeCacheManager::new(
-            BrokerConfig::default(),
-        ))));
-
-        let shard_name = "test-shard-scroll".to_string();
-
-        // Initial shard: active_segment_seq = 0
-        let initial_shard = EngineShard {
-            shard_uid: "uid-1".to_string(),
-            shard_name: shard_name.clone(),
-            topic_name: "topic".to_string(),
-            start_segment_seq: 0,
-            active_segment_seq: 0,
-            last_segment_seq: 0,
-            status: EngineShardStatus::Run,
-            config: EngineShardConfig::default(),
-            desc: "".to_string(),
-            create_time: now_second(),
-        };
-        cache.set_shard(initial_shard);
-
-        assert_eq!(cache.shards.get(&shard_name).unwrap().active_segment_seq, 0);
-
-        // Simulate a Shard Update notification after scroll: active_segment_seq = 1
-        let updated_shard = EngineShard {
-            shard_uid: "uid-1".to_string(),
-            shard_name: shard_name.clone(),
-            topic_name: "topic".to_string(),
-            start_segment_seq: 0,
-            active_segment_seq: 1,
-            last_segment_seq: 1,
-            status: EngineShardStatus::Run,
-            config: EngineShardConfig::default(),
-            desc: "".to_string(),
-            create_time: now_second(),
-        };
-        cache.set_shard(updated_shard);
-
-        assert_eq!(
-            cache.shards.get(&shard_name).unwrap().active_segment_seq,
-            1,
-            "active_segment_seq must update when Shard Update notification is applied"
-        );
     }
 }

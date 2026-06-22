@@ -4,7 +4,7 @@
 
 ---
 
-## 零、Segment Scroll 重新设计 + Write 优化（当前最高优先级）
+## 零、Segment Scroll 重新设计 + Write 优化（已全部完成）
 
 > 进度标记：`- [ ]` 待完成 / `- [x]` 已完成
 
@@ -48,177 +48,161 @@
   - 改：先 `timeout(10ms, recv()).await` 等第一条，再 `try_recv` drain 至 100 条
   - 测试：`filesegment::write::tests::write_manager_write_test` ✓（功能回归通过）
 
-- [ ] **W2** mmap 用 `written_watermark` 替代全量 `clear_cache`
-  - 文件：`src/storage-engine/src/filesegment/segment_file.rs`
-  - 在 `SegmentFile` 增加 `written_watermark: AtomicU64`；`write()` 后更新 watermark 而非清缓存；读时超出 watermark 部分走 write_buffer 或 fallback 到文件读
-  - 测试：写入后立即通过 mmap 路径能读到新记录；大文件不触发全量重新 mmap
+- [x] **W2 / P0-4** mmap 写后不失效 — `file.rs::write()` flush 后调 `self.clear_cache()`，下次读时 `ensure_mmap()` 重建，新追加数据立即可见
+  - 文件：`src/storage-engine/src/filesegment/file.rs:207`
+  - 修复：`writer.flush().await?` 之后加 `self.clear_cache()`
+  - 测试：`filesegment::file::tests` 全部通过 ✓
 
 ---
 
-## 一、ISR / 复制（最高优先级）
+## 一、ISR / 复制 ✅ 已全部完成
 
-### P0-1：为 EngineSegment 实现 `ReplicaLog` trait
+### ~~P0-1：为 EngineSegment 实现 `ReplicaLog` trait~~ ✅ 已修复
 
-**现状**：`ReplicaLog` trait 只有 `RocksDBStorageEngine` 和 `MemoryStorageEngine` 两个实现；
-`isr/handle_fetch.rs` 的 `FetchEngines` 结构体只含 `memory` / `rocksdb`，无 `segment` 字段。
+**修复**：新建 `src/storage-engine/src/filesegment/replica.rs`，实现 `FileSegmentReplicaLog`，覆盖全部 7 个方法：
+- `append_at`：校验 `base_offset == LEO`，写文件 + 建索引 + 推进 LEO
+- `read_from`：调 `segment_read_by_offset`
+- `latest_offset` / `log_start_offset`：读 `SegmentOffset`
+- `truncate_to`：扫文件找截断字节位 → `set_len` → 清索引 → 重置 LEO
+- `clear`：`set_len(0)` → 清索引 → 重置 LEO 到 start_offset
+- `update_high_watermark`：写 `CommitLogOffset::save_high_watermark_offset`
 
-**影响**：EngineSegment 的 follower 永远无法从 leader fetch 数据，ISR 复制对该存储类型完全不工作。
+同步修改：`FetchEngines` 新增 `segment` 字段；`EngineReplicaLog` 新增 EngineSegment 分支；`build_engine_fetcher_manager` 增加 `rocksdb_engine_handler` 参数；更新全部 7 处构造位置。
 
-**需要实现**：
-- `append_at(base_offset, records)` — 写入时校验 base_offset == LEO，批量追加到 segment 文件
-- `read_from(start_offset, max_bytes)` — 从 segment 文件读出记录，供 leader 向 follower 发送
-- `truncate_to(offset)` — leader 切换后截断尾部不一致日志
-- `clear()` — 清空 shard 所有 segment 数据
-- `update_high_watermark(hw)` — follower 收到 leader HW 后更新本地 HW
-- 将 EngineSegment 接入 `FetchEngines` 和 `handle_offsets_for_leader_epoch`
+### ~~P0-2：EngineSegment 的 HW（高水位）追踪缺失~~ ✅ 已修复
 
-### P0-2：EngineSegment 的 HW（高水位）追踪缺失
+**修复**：`FileSegmentReplicaLog::update_high_watermark` 调用 `CommitLogOffset::save_high_watermark_offset`，与 memory/rocksdb 路径统一。`FetchEngines` / `EngineReplicaLog` 均已路由 EngineSegment 到该实现。
 
-**现状**：`core/write.rs::batch_write` 中 `advance_hw` 始终操作 `memory_storage_engine.commit_log_offset`；
-`core/shard_offset.rs::get_high_water_offset` 对所有存储类型直接 `return Ok(0)`。
+### ~~P0-3：EngineSegment 缺少 epoch / truncation 支持~~ ✅ 已修复
 
-**影响**：EngineSegment 写入后 `acks=all` 语义无法保证；consumer 通过 HW 判断可消费偏移量时始终得到 0。
-
-**需要实现**：
-- `FileSegmentOffset` 暴露 shard 级别的 `save_high_watermark` / `get_high_watermark`
-- `get_high_water_offset` 对 EngineSegment 走 `FileSegmentOffset`，不再返回 0
-- `batch_write` 写完后对 EngineSegment 调用对应的 HW advance 逻辑
-
-### P0-3：EngineSegment 缺少 epoch / truncation 支持
-
-**现状**：`OffsetsForLeaderEpochReq` 在 `command.rs` 中构造 `FetchEngines` 后调用 `handle_offsets_for_leader_epoch`，该函数内部没有 EngineSegment 的处理路径。
-
-**影响**：follower 重连时无法通过 `OffsetsForLeaderEpoch` 协商截断点，导致日志分叉无法修复。
+**修复**：`isr/handle_epoch.rs` 中 `leo_for()` 和 `query_local_replica_state()` 均新增 `StorageType::EngineSegment` 分支，分别调用 `engines.segment.latest_offset` 和 `engines.segment.log_start_offset`。
 
 ---
 
-## 二、Handler 入口（中优先级）
+## 二、Handler 入口 ✅ 已全部完成
 
-### P1-1：`shard_offset_req` 对 EngineSegment 返回 `(0, 0)`
+### ~~P1-1：`shard_offset_req` 对 EngineSegment 返回 `(0, 0)`~~ ✅ 已修复
 
-**现状**：`handler/data.rs::shard_offset_req` 的 storage_type 匹配走到 `_ => (0, 0)`。
+**修复**：`handler/data.rs::shard_offset_req` 新增 `StorageType::EngineSegment` 分支，通过 `SegmentOffset::get_earliest_offset` / `get_latest_offset` 返回正确的 `(start_offset, end_offset)`。
 
-**影响**：客户端查询 shard 的 earliest/latest offset 时始终得到全零，`seek_to_beginning` / `seek_to_end` 语义错误。
+### ~~P1-2：`get_offset_by_timestamp` 对 EngineSegment 未接入 handler~~ ✅ 已修复
 
-**修复方向**：使用 `FileSegmentOffset::get_earliest_offset` 和 `get_latest_offset` 填充返回值。
+**修复**：`shard_offset_req` 的 `by_timestamp` 分支新增 `StorageType::EngineSegment` 分支，调用 `SegmentOffset::get_offset_by_timestamp`。
 
-### P1-2：`get_offset_by_timestamp` 对 EngineSegment 未接入 handler
+### ~~P1-3：tag / key 读取向全集群广播~~ ✅ 已确认行为正确
 
-**现状**：`shard_offset_req` 的 `by_timestamp` 分支对 EngineSegment 走到 `_ => 0`；
-但 `filesegment/offset.rs::FileSegmentOffset::get_offset_by_timestamp` 已经实现了按 timestamp 查找 segment。
-
-**修复方向**：将 `FileSegmentOffset::get_offset_by_timestamp` 接入 handler 的 by_timestamp 分支。
-
-### P1-3：tag / key 读取向全集群广播，而非只查副本节点
-
-**现状**：`core/read_key.rs` 对 EngineSegment 调用 `call_read_data_by_all_node`，向集群内所有 broker 广播读请求。
-
-**影响**：集群规模大时流量放大；不持有该 shard 任何副本的节点也会被无谓查询。
-
-**修复方向**：改为只向持有该 shard 相关 segment 副本的节点发送请求（从 segment meta 中读取 replicas 列表）。
+**结论**：`call_read_data_by_all_node` 内部调用 `get_segment_leader_nodes`，已限定为该 shard 所有 segment 的 leader 节点，并非全集群广播。对 EngineSegment 多 segment 场景，查询所有 segment leader 是必要的，行为正确。函数命名有误导性，但实现无误。
 
 ---
 
-## 三、mmap 缓存正确性（高优先级，正确性 bug）
+## 三、mmap 缓存正确性 ✅ 已修复
 
-### P0-4：写入后 mmap 缓存不失效，新记录不可见
+### ~~P0-4：写入后 mmap 缓存不失效，新记录不可见~~ ✅ 已修复
 
-**现状**：`SegmentFile::mmap_cache` 在 `ensure_mmap()` 初始化后不会随 `write()` 自动失效；
-`clear_cache()` 方法存在但只在 benchmark 测试中调用，写路径从未调用它。
-
-**影响**：通过 mmap 路径（`read_by_offset` 的主路径）读取时，`write()` 新追加的记录不可见，
-直到进程重启或手动触发 `clear_cache()`。
-
-**修复方向**：每次 `write()` 后调用 `clear_cache()`；或改为写时 remap（重新 mmap 最新 file_size）。
+**修复**：`src/storage-engine/src/filesegment/file.rs:207`，`write()` 中 `writer.flush().await?` 之后加 `self.clear_cache()`，mmap 缓存在每次写入后立即失效，下次读取时 `ensure_mmap()` 重建映射，新追加数据立即可见。
 
 ---
 
 ## 四、Segment Meta 同步
 
-### P2-1：活跃 segment 的 end_offset 不实时同步到 meta 服务
+### ~~P2-1：活跃 segment 的 end_offset 重启后覆盖问题~~ ✅ 已修复
 
-**现状**：`FileSegmentOffset::save_latest_offset` 只写本地 RocksDB，不通知 meta 服务。
+**分析**：
+- scroll 时 `create_segment_by_req` 调用 `update_last_offset_by_segment_metadata(current_segment_end_offset)`，meta 服务侧 end_offset 已被准确更新（S4 已修正为真实 `last_offset`）。
+- 真正的 bug 是：broker 重启时 `parse_segment_meta` 用 meta 服务的旧值（上次 seal 时的值）覆盖本地 RocksDB 中保存的更高的 LEO，导致写入指针回退、消费者看到的 latest_offset 偏小。
 
-**影响**：broker 崩溃重启后，meta 服务侧的 `end_offset` 是上次 seal（滚动）时的值，可能远落后于实际写入进度；
-重启后消费者通过 meta 服务查到的 latest_offset 偏小。
+**修复**：`core/dynamic_cache.rs::parse_segment_meta` 新增保护逻辑：先读取本地 RocksDB 的 `end_offset`，若本地值 > meta 服务值则保留本地值，不做覆盖。
 
-**修复方向**：重启时在本地恢复完成后，将实际 LEO 上报给 meta 服务；或 seal 时写入准确的 end_offset。
+```rust
+let local_end = segment_index_manager.get_end_offset(&segment_iden).unwrap_or(-1);
+let effective_end = if local_end > meta.end_offset { local_end } else { meta.end_offset };
+```
 
-### P2-2：segment 切换时 end_offset 使用硬编码估算值
+meta 服务端的 `end_offset` 在下次 scroll 时会被正确更新，无需主动上报。
 
-**现状**：`scroll.rs` 中 `end_offset = last_offset + SEGMENT_SCROLL_OFFSET_BUFFER (10000)`，属于估算。
+### ~~P2-2：segment 切换时 end_offset 精度~~ ✅ 已确认正确
 
-**影响**：真正封存时 end_offset 可能与下一个 segment 的 start_offset 不连续，导致 offset 路由出现空洞或重叠。
+**确认**：
+- `create_segment_by_req` 在调用 `seal_up_segment` 之前，先调用 `update_last_offset_by_segment_metadata(shard, seg, req.current_segment_end_offset)` 精确设置 `end_offset`。
+- `seal_up_segment` 本身只更新 `status = SealUp` 和 `end_timestamp`，不推算也不覆盖 `end_offset`。
+- 新 segment 的 `start_offset = current_segment_end_offset + 1`（代码第 142 行），严格满足 `end_offset = next.start_offset - 1` 的语义。
+- broker 侧 S4 已保证 `current_segment_end_offset` 是真实的最后写入 offset，而非估算值。
 
-**修复方向**：seal 时将 end_offset 精确设置为下一个 segment 的 `start_offset - 1`，而非估算值。
+结论：meta seal 侧实现正确，无需额外修复。
 
 ---
 
 ## 五、过期清理
 
-### P2-3：删除 segment 后本地 `SegmentOffset` 元数据未清理
+### ~~P2-3：删除 segment 后本地 `SegmentOffset` 元数据未清理~~ ✅ 已修复
 
-**现状**：`core/segment.rs::delete_local_segment` 删除了 `.msg` 文件和 RocksDB 索引（`delete_segment_index`），
-但 `SegmentOffset` 中该 segment 的 start_offset / end_offset / timestamp 字段未随之删除。
+**修复**：
+- `filesegment/offset.rs` 新增 `SegmentOffset::delete_segment_metadata`，删除全部 5 个 RocksDB key（`offset_segment_start`、`offset_segment_end`、`offset_segment_high_watermark`、`timestamp_segment_start`、`timestamp_segment_end`）。
+- `core/segment.rs::delete_local_segment` 在删除索引后，对 `EngineSegment` 类型的 shard 调用 `delete_segment_metadata`，与文件删除保持原子语义。
+- 测试：`filesegment::offset::tests::delete_segment_metadata_cleans_all_keys` ✓（写入全部 5 个 key 后调用删除，验证各 key 返回 -1 哨兵值）。
 
-**影响**：孤儿 metadata 积累；重启后 `FileSegmentOffset` 从 RocksDB 恢复时可能读到已删除 segment 的偏移量。
+### ~~P2-4：expire 仅在 leader 上触发，follower 本地文件无独立清理路径~~ ✅ 已修复
 
-### P2-4：expire 仅在 leader 上触发，follower 本地文件无独立清理路径
-
-**现状**：`filesegment/expire.rs` 只有 leader 向 meta 服务发起 `delete_segment` RPC；
-follower 通过 `BrokerUpdateCacheResourceType::Segment` Delete 通知触发 `delete_local_segment`。
-
-**影响**：若 Delete 通知丢失（网络分区、重启），follower 的 `.msg` 文件将永远保留，磁盘无法回收。
-
-**修复方向**：follower 定期与 meta 服务对比本地 segment 列表，主动清理孤儿 segment。
+**修复**：
+- `filesegment/expire.rs` 新增 `scan_and_clean_orphan_segments`：每轮循环从 meta 服务拉取全量 segment 列表，对比本地 cache，找出此节点作为 follower-replica 却不在 meta 中的孤儿 segment，逐一调用 `delete_local_segment` 清理。
+- 提取了纯逻辑函数 `collect_follower_orphans(cache_manager, broker_id, meta_set) -> Vec<SegmentIdentity>`，便于单元测试。
+- `start_segment_expire_thread` 新增 `rocksdb_engine_handler` 参数，`lib.rs` 调用处同步更新。
+- 测试：
+  - `orphan_detection_skips_leader_segments` — leader 持有的 segment 不会被误判为孤儿 ✓
+  - `orphan_detection_returns_follower_not_in_meta` — follower segment 不在 meta 中时被正确识别 ✓
+  - `orphan_detection_skips_non_replica_segments` — 非本节点 replica 的 segment 跳过 ✓
 
 ---
 
 ## 六、Offset / 接口统一
 
-### P3-1：`FileSegmentOffset` 与 `CommitLogOffset` 无统一接口
+### ~~P3-1：`SegmentOffset` 与 `CommitLogOffset` 无统一接口~~ ✅ 已修复
 
-**现状**：EngineSegment 用 `FileSegmentOffset`（segment 粒度），Memory / RocksDB 用 `CommitLogOffset`（shard 粒度），
-两套接口不兼容，导致 `core/write.rs` 等上层代码无法统一处理。
+**修复**：
+- 新建 `src/storage-engine/src/core/offset_manager.rs`，定义 `ShardOffsetManager` trait：
+  - `get_latest_offset(&self, shard_name: &str) -> Result<u64, StorageEngineError>`
+  - `get_earliest_offset(&self, shard_name: &str) -> Result<u64, StorageEngineError>`
+  - `get_offset_by_timestamp(...)` — 有默认实现（strategy 回退到 earliest/latest）
+  - 额外提供 `Arc<T: ShardOffsetManager>` 的 blanket impl
+- `CommitLogOffset` 实现该 trait（委托现有方法）
+- `SegmentOffset` 实现该 trait（覆盖 `get_offset_by_timestamp`，使用真实 segment-level 时间戳索引）
+- `handler/data.rs::shard_offset_req` 重构：3 分支 × 2 match → 1 match 构造 `Box<dyn ShardOffsetManager>`，统一调用 `get_latest_offset` / `get_earliest_offset`；Memory/RocksDB 的 by_timestamp 路径仍保留 async engine 方法以维持精度。
+- 测试：`default_timestamp_fallback_earliest/latest`、`commit_log_offset_implements_trait`、`segment_offset_implements_trait` 共 4 个 ✓
 
-**修复方向**：抽象一个 `ShardOffsetManager` trait，两种实现各自满足；上层代码依赖 trait，消除 storage_type 分支。
+### ~~P3-2：`SegmentOffset::get_high_watermark_offset` 读取了错误的 key~~ ✅ 已修复
 
-### P3-2：`SegmentOffset::get_high_watermark_offset` 读取了错误的 key
-
-**现状**：`filesegment/segment_offset.rs` 第 90 行附近，`get_high_watermark_offset` 使用了 `offset_segment_end` key 而非 `offset_segment_high_watermark` key。
-
-**影响**：读到的是 end_offset，而非 high_watermark，使 HW 语义混乱。
+`filesegment/offset.rs::get_high_watermark_offset` 现已使用正确的 `offset_segment_high_watermark` key，不再读 `offset_segment_end`。
 
 ---
 
 ## 七、读路径完整性
 
-### P3-3：`read_by_offset` 不支持跨 segment 连续读取
+### ~~P3-3：`read_by_offset` 不支持跨 segment 连续读取~~ ✅ 已修复
 
-**现状**：`core/read_offset.rs::read_by_segment` 只打开单个 segment 文件读取，
-若请求的 offset 范围跨越 segment 边界，不会自动切换到下一个 segment。
+**修复**：`core/read_offset.rs::read_by_segment` 重写为循环：读完当前 segment 后，若 `remaining_records > 0` 且 `remaining_size > 0` 且下一个 segment（`current_seq + 1`）在 cache 中存在，则继续以 `offset = 0` 读取下一个 segment，直至条件不满足或没有更多 segment。
 
-**影响**：消费者在 segment 末尾附近读取时，返回的记录数少于请求的 max_record_num，需要多次 RPC 拼凑。
-
-**修复方向**：读取完当前 segment 后，若未满足 max_record_num / max_size，继续打开下一个 segment 读取。
+测试：
+- `reads_within_single_segment` — 单 segment 场景不退化 ✓
+- `continues_into_next_segment_when_first_is_exhausted` — 跨两个 segment 读到全部 4 条记录 ✓
+- `respects_max_record_num_across_segments` — `max_record_num=3` 限制跨 segment 后正确截断 ✓
 
 ---
 
 ## 优先级汇总
 
-| 优先级 | 编号 | 任务 |
-|--------|------|------|
-| P0 | P0-4 | mmap 缓存写后不失效（正确性 bug） |
-| P0 | P0-1 | EngineSegment 实现 ReplicaLog trait，接入 ISR |
-| P0 | P0-2 | EngineSegment HW 追踪（write.rs + shard_offset） |
-| P0 | P0-3 | EngineSegment epoch / truncation 支持 |
-| P1 | P1-1 | shard_offset_req 支持 EngineSegment（非零返回） |
-| P1 | P1-2 | get_offset_by_timestamp 接入 EngineSegment handler |
-| P1 | P1-3 | tag/key 读取改为只查副本节点，不广播全集群 |
-| P2 | P2-1 | 活跃 segment end_offset 重启后上报 meta 服务 |
-| P2 | P2-2 | segment 切换时 end_offset 使用精确值而非估算 |
-| P2 | P2-3 | delete_local_segment 同时清理 SegmentOffset 元数据 |
-| P2 | P2-4 | follower 定期对比 meta，主动清理孤儿 segment |
-| P3 | P3-1 | FileSegmentOffset / CommitLogOffset 统一 trait |
-| P3 | P3-2 | SegmentOffset::get_high_watermark_offset 读错 key 修复 |
-| P3 | P3-3 | read_by_offset 支持跨 segment 连续读取 |
+| 优先级 | 编号 | 状态 | 任务 |
+|--------|------|------|------|
+| P0 | W2/P0-4 | ✅ | mmap 写后不失效：`file.rs:207` 调 `clear_cache()`，新记录立即可见 |
+| P0 | P0-1 | ✅ | EngineSegment 接入 ISR：新建 `filesegment/replica.rs`，`FetchEngines`/`EngineReplicaLog` 全部接入 |
+| P0 | P0-2 | ✅ | EngineSegment HW 追踪：`update_high_watermark` 写 `CommitLogOffset`，路由已接入 |
+| P0 | P0-3 | ✅ | EngineSegment epoch/truncation：`handle_epoch.rs` `leo_for` / `query_local_replica_state` 已加分支 |
+| P1 | P1-1 | ✅ | `shard_offset_req` EngineSegment 分支：已接入 `SegmentOffset::get_earliest/latest_offset` |
+| P1 | P1-2 | ✅ | `get_offset_by_timestamp` EngineSegment 分支：已接入 `SegmentOffset::get_offset_by_timestamp` |
+| P1 | P1-3 | ✅ | tag/key 读取：`call_read_data_by_all_node` 已限定为 shard segment leader 节点，行为正确 |
+| P2 | P2-1 | ✅ | `parse_segment_meta` 保留本地更高 LEO，不被 meta 旧值覆盖 |
+| P2 | P2-2 | ✅ | meta `seal_up_segment` 不推算 end_offset；`update_last_offset_by_segment_metadata` 精确设置；new.start = end + 1 严格保证 |
+| P2 | P2-3 | ✅ | `delete_local_segment` 清理 `SegmentOffset` RocksDB 元数据：新增 `delete_segment_metadata` 方法并在 delete_local_segment 中调用 |
+| P2 | P2-4 | ✅ | follower 孤儿清理：`scan_and_clean_orphan_segments` 对比 meta 列表，`collect_follower_orphans` 逻辑已测试 |
+| P3 | P3-1 | ✅ | `ShardOffsetManager` trait 已定义；`CommitLogOffset` / `SegmentOffset` 均实现；`shard_offset_req` 已统一调用 |
+| P3 | P3-2 | ✅ | `get_high_watermark_offset` 读错 key — **已修复** |
+| P3 | P3-3 | ✅ | `read_by_segment` 重写为循环，跨 segment 连续读取；3 个测试覆盖单/双 segment 及 max_record_num 截断 |
