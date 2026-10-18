@@ -434,6 +434,10 @@ const items = [
             text: "Build and Package",
             link: "/en/ContributionGuide/ContributingCode/Build-and-Package",
           },
+          {
+            text: "Coverage Toolchain",
+            link: "/en/ContributionGuide/ContributingCode/Coverage-Toolchain",
+          },
         ],
       },
       {
